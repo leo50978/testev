@@ -85,32 +85,61 @@ async function logoutCurrentUser() {
   return signOut(auth);
 }
 
-function shouldPreferGoogleRedirect() {
+function isGoogleRedirectSupportedOnCurrentHost() {
   if (typeof window === "undefined") return false;
   const host = String(window.location?.hostname || "").trim().toLowerCase();
   const protocol = String(window.location?.protocol || "").trim().toLowerCase();
-  if (!host) return protocol !== "file:";
-  return host !== "localhost" && host !== "127.0.0.1" && host !== "::1" && !host.endsWith(".local");
+  if (!host) return false;
+  if (protocol === "file:") return false;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local")) {
+    return false;
+  }
+  return host.endsWith(".firebaseapp.com") || host.endsWith(".web.app");
+}
+
+async function waitForResolvedPopupUser(timeoutMs = 1800) {
+  if (auth.currentUser) return auth.currentUser;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finalize = (user) => {
+      if (settled) return;
+      settled = true;
+      try {
+        unsubscribe();
+      } catch (_) {}
+      window.clearTimeout(timer);
+      resolve(user || null);
+    };
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) finalize(user);
+    });
+
+    const timer = window.setTimeout(() => {
+      finalize(auth.currentUser || null);
+    }, Math.max(250, Number(timeoutMs) || 1800));
+  });
 }
 
 async function loginWithGoogle() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
-  if (shouldPreferGoogleRedirect()) {
-    await signInWithRedirect(auth, provider);
-    return { mode: "redirect", result: null };
-  }
   try {
     const res = await signInWithPopup(auth, provider);
     return { mode: "popup", result: res };
   } catch (err) {
     const code = err?.code ? String(err.code) : "";
-    // Only force redirect when the popup cannot open at all.
-    // `popup-closed-by-user` is also emitted by some browsers when COOP blocks popup polling,
-    // even though auth may have succeeded in the popup.
-    if (code === "auth/popup-blocked" || code === "auth/cancelled-popup-request") {
+    // Popup remains the primary flow. Redirect is only reliable on Firebase-hosted domains.
+    if (code === "auth/popup-blocked" && isGoogleRedirectSupportedOnCurrentHost()) {
       await signInWithRedirect(auth, provider);
       return { mode: "redirect", result: null };
+    }
+    if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+      const resolvedUser = await waitForResolvedPopupUser();
+      if (resolvedUser) {
+        return { mode: "popup", result: { user: resolvedUser } };
+      }
     }
     throw err;
   }
