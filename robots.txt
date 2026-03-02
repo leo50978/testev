@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+
+Disallow: /Dpayment.html
+Disallow: /Danalytics.html
+Disallow: /Ddiscussion.html
+Disallow: /ambassader.html
+Disallow: /createambassadeur.html
+Disallow: /discussion-agent.html
+Disallow: /jeu.html
+Disallow: /inedex.html
+
+Sitemap: https://dominoeslakay.com/sitemap.xml
