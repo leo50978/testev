@@ -24,7 +24,7 @@ const DPAYMENT_ADMIN_BOOTSTRAP_DOC = "dpayment_admin_bootstrap";
 const DEFAULT_BOT_DIFFICULTY = "expert";
 
 const RATE_HTG_TO_DOES = 20;
-const WIN_REWARD_DOES = 300;
+const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
 const USER_REFERRAL_DEPOSIT_REWARD = 100;
 const MAX_TREE_ROOTS = 6;
 const MAX_TOP_ROWS = 8;
@@ -98,6 +98,12 @@ function renderBotDifficultyControls(level = DEFAULT_BOT_DIFFICULTY) {
 function safeInt(value) {
   const num = Number(value);
   return Number.isFinite(num) ? Math.max(0, Math.floor(num)) : 0;
+}
+
+function resolveRoomRewardDoes(room = {}) {
+  const explicit = safeInt(room.rewardAmountDoes);
+  if (explicit > 0) return explicit;
+  return safeInt(room.entryCostDoes || room.stakeDoes) * DEFAULT_STAKE_REWARD_MULTIPLIER;
 }
 
 function safeSignedInt(value) {
@@ -657,7 +663,7 @@ function computeMetrics(raw, range) {
     totalHumans += humans;
     totalBots += bots;
     totalStakeDoes += humans * entryCostDoes;
-    if (hasWinner) totalRewardDoes += WIN_REWARD_DOES;
+    if (hasWinner) totalRewardDoes += resolveRoomRewardDoes(room);
   });
 
   const ordersInRange = orders.filter((item) => withinRange(getCreatedMs(item), range));

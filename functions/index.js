@@ -22,10 +22,9 @@ const SUPPORT_THREADS_COLLECTION = "supportThreads";
 const SUPPORT_MESSAGES_SUBCOLLECTION = "messages";
 
 const RATE_HTG_TO_DOES = 20;
-const WIN_REWARD_DOES = 300;
+const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
 const USER_REFERRAL_DEPOSIT_REWARD = 100;
 const FINANCE_ADMIN_EMAIL = "leovitch2004@gmail.com";
-const ALLOWED_STAKES_DOES = new Set([100]);
 const MIN_ORDER_HTG = 25;
 const MIN_WITHDRAWAL_HTG = 50;
 const MAX_WITHDRAWAL_HTG = 500000;
@@ -46,6 +45,13 @@ const DEFAULT_PUBLIC_SETTINGS = Object.freeze({
   expiredMessage: "Le délai de vérification est dépassé. Contactez le support.",
 });
 const DPAYMENT_ADMIN_BOOTSTRAP_DOC = "dpayment_admin_bootstrap";
+const APP_PUBLIC_SETTINGS_DOC = "public_app_settings";
+const DEFAULT_GAME_STAKE_OPTIONS = Object.freeze([
+  Object.freeze({ stakeDoes: 100, enabled: true, sortOrder: 10 }),
+  Object.freeze({ stakeDoes: 500, enabled: false, sortOrder: 20 }),
+  Object.freeze({ stakeDoes: 1000, enabled: false, sortOrder: 30 }),
+  Object.freeze({ stakeDoes: 5000, enabled: false, sortOrder: 40 }),
+]);
 const DEFAULT_BOT_DIFFICULTY = "expert";
 const BOT_DIFFICULTY_LEVELS = new Set(["amateur", "expert", "ultra"]);
 const BOT_DIFFICULTY_LOOKAHEAD = Object.freeze({
@@ -691,6 +697,95 @@ function walletHistoryRef(uid) {
 
 function adminBootstrapRef() {
   return db.collection("settings").doc(DPAYMENT_ADMIN_BOOTSTRAP_DOC);
+}
+
+function appPublicSettingsRef() {
+  return db.collection("settings").doc(APP_PUBLIC_SETTINGS_DOC);
+}
+
+function buildStakeRewardDoes(stakeDoes) {
+  return safeInt(stakeDoes) * DEFAULT_STAKE_REWARD_MULTIPLIER;
+}
+
+function buildStakeOptionId(stakeDoes) {
+  return `stake_${safeInt(stakeDoes)}`;
+}
+
+function normalizeGameStakeOptions(rawOptions) {
+  const source = Array.isArray(rawOptions) && rawOptions.length ? rawOptions : DEFAULT_GAME_STAKE_OPTIONS;
+  const byStake = new Map();
+
+  source.forEach((raw, index) => {
+    const stakeDoes = safeInt(raw?.stakeDoes);
+    if (stakeDoes <= 0) return;
+    if (byStake.has(stakeDoes)) return;
+
+    const sortOrderRaw = Number(raw?.sortOrder);
+    const sortOrder = Number.isFinite(sortOrderRaw) ? Math.trunc(sortOrderRaw) : ((index + 1) * 10);
+
+    byStake.set(stakeDoes, {
+      id: buildStakeOptionId(stakeDoes),
+      stakeDoes,
+      rewardDoes: buildStakeRewardDoes(stakeDoes),
+      enabled: raw?.enabled !== false,
+      sortOrder,
+    });
+  });
+
+  const normalized = Array.from(byStake.values())
+    .sort((left, right) => {
+      if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder;
+      return left.stakeDoes - right.stakeDoes;
+    });
+
+  if (normalized.length) return normalized;
+  return DEFAULT_GAME_STAKE_OPTIONS.map((item) => ({
+    id: buildStakeOptionId(item.stakeDoes),
+    stakeDoes: item.stakeDoes,
+    rewardDoes: buildStakeRewardDoes(item.stakeDoes),
+    enabled: item.enabled !== false,
+    sortOrder: item.sortOrder,
+  }));
+}
+
+function findStakeConfigByAmount(stakeDoes, gameStakeOptions, requireEnabled = false) {
+  const normalizedStake = safeInt(stakeDoes);
+  if (normalizedStake <= 0) return null;
+  const options = Array.isArray(gameStakeOptions) ? gameStakeOptions : normalizeGameStakeOptions();
+  const found = options.find((item) => safeInt(item?.stakeDoes) === normalizedStake) || null;
+  if (!found) return null;
+  if (requireEnabled && found.enabled !== true) return null;
+  return found;
+}
+
+function resolveRoomRewardDoes(room = {}) {
+  const explicit = safeInt(room.rewardAmountDoes);
+  if (explicit > 0) return explicit;
+  return buildStakeRewardDoes(room.entryCostDoes || room.stakeDoes || 0);
+}
+
+function normalizePublicAppSettings(rawData = {}) {
+  return {
+    verificationHours: Math.max(1, Math.min(72, safeInt(rawData.verificationHours || DEFAULT_PUBLIC_SETTINGS.verificationHours))),
+    expiredMessage: sanitizeText(rawData.expiredMessage || DEFAULT_PUBLIC_SETTINGS.expiredMessage, MAX_PUBLIC_TEXT_LENGTH),
+    gameStakeOptions: normalizeGameStakeOptions(rawData.gameStakeOptions),
+  };
+}
+
+async function readRawPublicAppSettings() {
+  const directSnap = await appPublicSettingsRef().get();
+  if (directSnap.exists) {
+    return directSnap.data() || {};
+  }
+
+  const fallbackSnap = await db.collection("settings").get();
+  if (fallbackSnap.empty) return {};
+
+  const legacy = fallbackSnap.docs.find((docSnap) => {
+    return docSnap.id !== DPAYMENT_ADMIN_BOOTSTRAP_DOC && docSnap.id !== APP_PUBLIC_SETTINGS_DOC;
+  });
+
+  return legacy ? (legacy.data() || {}) : {};
 }
 
 async function getConfiguredBotDifficulty() {
@@ -1775,7 +1870,8 @@ exports.walletMutate = publicOnCall("walletMutate", async (request) => {
     };
   } else if (op === "game_entry") {
     const amountDoes = safeInt(payload.amountDoes);
-    if (!ALLOWED_STAKES_DOES.has(amountDoes)) {
+    const settingsSnapshot = await getSettingsSnapshotData();
+    if (!findStakeConfigByAmount(amountDoes, settingsSnapshot.gameStakeOptions, true)) {
       throw new HttpsError("invalid-argument", "Mise non autorisée.");
     }
     mutation = {
@@ -1807,11 +1903,17 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
   const { uid, email } = assertAuth(request);
   const payload = request.data && typeof request.data === "object" ? request.data : {};
   const stakeDoes = safeInt(payload.stakeDoes);
-  const configuredBotDifficulty = await getConfiguredBotDifficulty();
+  const [configuredBotDifficulty, settingsSnapshot] = await Promise.all([
+    getConfiguredBotDifficulty(),
+    getSettingsSnapshotData(),
+  ]);
+  const selectedStakeConfig = findStakeConfigByAmount(stakeDoes, settingsSnapshot.gameStakeOptions, true);
 
-  if (!ALLOWED_STAKES_DOES.has(stakeDoes)) {
+  if (!selectedStakeConfig) {
     throw new HttpsError("invalid-argument", "Mise non autorisée.");
   }
+
+  const rewardAmountDoes = selectedStakeConfig.rewardDoes;
 
   const active = await findActiveRoomForUser(uid);
   if (active && active.seatIndex >= 0) {
@@ -1828,7 +1930,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
   const waitingCandidates = await db
     .collection(ROOMS_COLLECTION)
     .where("status", "==", "waiting")
-    .limit(16)
+    .limit(64)
     .get();
 
   const waitingDocs = waitingCandidates.docs
@@ -1853,6 +1955,12 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
         const room = roomSnap.data() || {};
         if (room.status !== "waiting") {
           throw new HttpsError("aborted", "Salle non disponible.");
+        }
+
+        const roomEntryCostDoes = safeInt(room.entryCostDoes || room.stakeDoes);
+        const roomRewardAmountDoes = resolveRoomRewardDoes(room);
+        if (roomEntryCostDoes !== stakeDoes || roomRewardAmountDoes !== rewardAmountDoes) {
+          throw new HttpsError("aborted", "Salle non compatible.");
         }
 
         const currentSeats = room.seats && typeof room.seats === "object" ? room.seats : {};
@@ -1921,7 +2029,10 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
           humanCount: nextHumans,
           botCount: Math.max(0, 4 - nextHumans),
           botDifficulty: configuredBotDifficulty,
+          stakeDoes,
           entryCostDoes: stakeDoes,
+          rewardAmountDoes,
+          stakeConfigId: selectedStakeConfig.id,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
 
@@ -2021,7 +2132,10 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
       deckOrder: [],
       gameMode: "domino-ffa",
       engineVersion: 2,
+      stakeDoes,
       entryCostDoes: stakeDoes,
+      rewardAmountDoes,
+      stakeConfigId: selectedStakeConfig.id,
     });
 
     return {
@@ -2544,7 +2658,13 @@ exports.claimWinReward = publicOnCall("claimWinReward", async (request) => {
         ok: true,
         rewardGranted: false,
         reason: "already_paid",
+        rewardAmountDoes: safeInt(settlementData.rewardAmountDoes) || resolveRoomRewardDoes(room),
       };
+    }
+
+    const rewardAmountDoes = resolveRoomRewardDoes(room);
+    if (rewardAmountDoes <= 0) {
+      throw new HttpsError("failed-precondition", "Gain invalide pour cette salle.");
     }
 
     const walletMutation = await applyWalletMutationTx(tx, {
@@ -2552,9 +2672,9 @@ exports.claimWinReward = publicOnCall("claimWinReward", async (request) => {
       email,
       type: "game_reward",
       note: `Gain de partie (${roomId})`,
-      amountDoes: WIN_REWARD_DOES,
+      amountDoes: rewardAmountDoes,
       amountGourdes: 0,
-      deltaDoes: WIN_REWARD_DOES,
+      deltaDoes: rewardAmountDoes,
       deltaExchangedGourdes: 0,
     });
 
@@ -2562,7 +2682,7 @@ exports.claimWinReward = publicOnCall("claimWinReward", async (request) => {
       uid,
       roomId,
       rewardPaid: true,
-      rewardAmountDoes: WIN_REWARD_DOES,
+      rewardAmountDoes,
       claimedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
@@ -2570,6 +2690,7 @@ exports.claimWinReward = publicOnCall("claimWinReward", async (request) => {
     return {
       ok: true,
       rewardGranted: true,
+      rewardAmountDoes,
       does: walletMutation.afterDoes,
     };
   });
@@ -2875,13 +2996,8 @@ exports.purgeExpiredDiscussionMessages = onSchedule("every 60 minutes", async ()
 });
 
 async function getSettingsSnapshotData() {
-  const snap = await db.collection("settings").limit(1).get();
-  if (snap.empty) return { ...DEFAULT_PUBLIC_SETTINGS };
-  const data = snap.docs[0].data() || {};
-  return {
-    verificationHours: Math.max(1, Math.min(72, safeInt(data.verificationHours || DEFAULT_PUBLIC_SETTINGS.verificationHours))),
-    expiredMessage: sanitizeText(data.expiredMessage || DEFAULT_PUBLIC_SETTINGS.expiredMessage, MAX_PUBLIC_TEXT_LENGTH),
-  };
+  const data = await readRawPublicAppSettings();
+  return normalizePublicAppSettings(data);
 }
 
 async function getPublicPaymentConfig() {
@@ -2900,6 +3016,19 @@ exports.getPublicPaymentOptionsSecure = publicOnCall("getPublicPaymentOptionsSec
   return {
     methods: data.methods,
     settings: data.settings,
+  };
+});
+
+exports.getPublicGameStakeOptionsSecure = publicOnCall("getPublicGameStakeOptionsSecure", async () => {
+  const settings = await getSettingsSnapshotData();
+  return {
+    options: settings.gameStakeOptions.map((item) => ({
+      id: item.id,
+      stakeDoes: item.stakeDoes,
+      rewardDoes: item.rewardDoes,
+      enabled: item.enabled === true,
+      sortOrder: item.sortOrder,
+    })),
   };
 });
 

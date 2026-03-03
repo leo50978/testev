@@ -1013,6 +1013,22 @@
               </div>
             </div>
 
+            <div class="lg:col-span-2 content-card p-6">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 class="font-semibold">Mises de partie</h3>
+                  <p class="text-sm text-text-secondary mt-1">
+                    Active, désactive, ajoute ou supprime les mises visibles sur le site. Le gain est calculé automatiquement à 3x la mise.
+                  </p>
+                </div>
+                <button id="addGameStakeBtn" class="btn btn-secondary">
+                  <i class="fas fa-plus"></i>
+                  Ajouter une mise
+                </button>
+              </div>
+              <div id="gameStakeConfigList" class="mt-5 space-y-3"></div>
+            </div>
+
             <div class="lg:col-span-2">
               <button id="saveSettings" class="btn btn-primary">
                 <i class="fas fa-save"></i>
@@ -1213,6 +1229,14 @@
     const XCHANGES = "xchanges";
     const AMBASSADORS = "ambassadors";
     const USER_REFERRAL_DEPOSIT_REWARD = 100;
+    const APP_PUBLIC_SETTINGS_DOC = 'public_app_settings';
+    const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
+    const DEFAULT_GAME_STAKE_OPTIONS = Object.freeze([
+      Object.freeze({ id: 'stake_100', stakeDoes: 100, enabled: true, sortOrder: 10 }),
+      Object.freeze({ id: 'stake_500', stakeDoes: 500, enabled: false, sortOrder: 20 }),
+      Object.freeze({ id: 'stake_1000', stakeDoes: 1000, enabled: false, sortOrder: 30 }),
+      Object.freeze({ id: 'stake_5000', stakeDoes: 5000, enabled: false, sortOrder: 40 }),
+    ]);
 
     // ========== ÉTAT ==========
     let clients = [];
@@ -1332,6 +1356,8 @@
       expiredMessage: document.getElementById('expiredMessage'),
       notificationEmail: document.getElementById('notificationEmail'),
       saveSettingsBtn: document.getElementById('saveSettings'),
+      gameStakeConfigList: document.getElementById('gameStakeConfigList'),
+      addGameStakeBtn: document.getElementById('addGameStakeBtn'),
       dashboardNotifToggle: document.getElementById('dashboardNotifToggle'),
       dashboardNotifStatus: document.getElementById('dashboardNotifStatus'),
       enableDashboardNotifBtn: document.getElementById('enableDashboardNotifBtn'),
@@ -1404,6 +1430,102 @@
     function safeSignedInt(value) {
       const n = Number(value);
       return Number.isFinite(n) ? Math.trunc(n) : 0;
+    }
+
+    function buildStakeRewardDoes(stakeDoes) {
+      return safeInt(stakeDoes) * DEFAULT_STAKE_REWARD_MULTIPLIER;
+    }
+
+    function normalizeGameStakeOptions(rawOptions) {
+      const source = Array.isArray(rawOptions) && rawOptions.length ? rawOptions : DEFAULT_GAME_STAKE_OPTIONS;
+      const byStake = new Map();
+
+      source.forEach((raw, index) => {
+        const stakeDoes = safeInt(raw?.stakeDoes);
+        if (stakeDoes <= 0) return;
+        if (byStake.has(stakeDoes)) return;
+
+        const sortOrderRaw = Number(raw?.sortOrder);
+        const sortOrder = Number.isFinite(sortOrderRaw) ? Math.trunc(sortOrderRaw) : ((index + 1) * 10);
+
+        byStake.set(stakeDoes, {
+          id: `stake_${stakeDoes}`,
+          stakeDoes,
+          enabled: raw?.enabled !== false,
+          sortOrder,
+          rewardDoes: buildStakeRewardDoes(stakeDoes),
+        });
+      });
+
+      const normalized = Array.from(byStake.values()).sort((left, right) => {
+        if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder;
+        return left.stakeDoes - right.stakeDoes;
+      });
+
+      if (normalized.length) return normalized;
+      return DEFAULT_GAME_STAKE_OPTIONS.map((item) => ({
+        id: `stake_${item.stakeDoes}`,
+        stakeDoes: item.stakeDoes,
+        enabled: item.enabled !== false,
+        sortOrder: item.sortOrder,
+        rewardDoes: buildStakeRewardDoes(item.stakeDoes),
+      }));
+    }
+
+    function ensureSettingsState() {
+      if (!settings || typeof settings !== 'object') {
+        settings = {};
+      }
+      settings.gameStakeOptions = normalizeGameStakeOptions(settings.gameStakeOptions);
+      return settings;
+    }
+
+    function renderGameStakeConfig() {
+      if (!elements.gameStakeConfigList) return;
+      const currentSettings = ensureSettingsState();
+      const rows = currentSettings.gameStakeOptions;
+      elements.gameStakeConfigList.innerHTML = rows.map((item, index) => `
+        <div class="rounded-2xl border border-border bg-white/70 p-4">
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,180px)_minmax(0,200px)_auto_auto] md:items-end">
+            <div>
+              <label class="block text-sm text-text-secondary mb-1">Mise (Does)</label>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value="${item.stakeDoes}"
+                data-stake-index="${index}"
+                data-stake-field="stakeDoes"
+                class="form-input"
+              >
+            </div>
+            <div>
+              <label class="block text-sm text-text-secondary mb-1">Gain</label>
+              <div class="form-input flex items-center justify-between bg-slate-50">
+                <span>${item.rewardDoes} Does</span>
+                <span class="text-xs text-text-secondary">x${DEFAULT_STAKE_REWARD_MULTIPLIER}</span>
+              </div>
+            </div>
+            <label class="flex items-center gap-2 rounded-xl border border-border px-4 py-3">
+              <input
+                type="checkbox"
+                ${item.enabled ? 'checked' : ''}
+                data-stake-index="${index}"
+                data-stake-field="enabled"
+              >
+              <span class="text-sm">Activée</span>
+            </label>
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-stake-remove="${index}"
+            >
+              <i class="fas fa-trash"></i>
+              Supprimer
+            </button>
+          </div>
+        </div>
+      `).join('');
     }
 
     function tsToMs(value) {
@@ -1864,15 +1986,40 @@
 
     async function loadSettings() {
       try {
-        const snapshot = await getDocs(collection(db, SETTINGS));
-        if (!snapshot.empty) {
-          settings = snapshot.docs[0].data();
-          elements.verificationHours.value = settings.verificationHours || 12;
-          elements.expiredMessage.value = settings.expiredMessage || '';
-          elements.notificationEmail.value = settings.notificationEmail || '';
+        const settingsRef = doc(db, SETTINGS, APP_PUBLIC_SETTINGS_DOC);
+        let loadedData = null;
+        const directSnap = await getDoc(settingsRef);
+        if (directSnap.exists()) {
+          loadedData = directSnap.data() || {};
+        } else {
+          const snapshot = await getDocs(collection(db, SETTINGS));
+          const legacyDoc = snapshot.docs.find((item) => item.id !== DPAYMENT_ADMIN_BOOTSTRAP_DOC && item.id !== APP_PUBLIC_SETTINGS_DOC);
+          if (legacyDoc) {
+            loadedData = legacyDoc.data() || {};
+          }
         }
+
+        settings = {
+          verificationHours: 12,
+          expiredMessage: 'Le délai de vérification est dépassé. Contactez le support.',
+          notificationEmail: '',
+          ...(loadedData || {}),
+          gameStakeOptions: normalizeGameStakeOptions(loadedData?.gameStakeOptions),
+        };
+
+        elements.verificationHours.value = settings.verificationHours || 12;
+        elements.expiredMessage.value = settings.expiredMessage || '';
+        elements.notificationEmail.value = settings.notificationEmail || '';
+        renderGameStakeConfig();
       } catch (error) {
         console.error('❌ Erreur chargement paramètres:', error);
+        settings = {
+          verificationHours: 12,
+          expiredMessage: 'Le délai de vérification est dépassé. Contactez le support.',
+          notificationEmail: '',
+          gameStakeOptions: normalizeGameStakeOptions(),
+        };
+        renderGameStakeConfig();
       }
     }
 
@@ -3669,23 +3816,31 @@
     }
 
     async function saveSettings() {
+      const currentSettings = ensureSettingsState();
       const settingsData = {
         verificationHours: parseInt(elements.verificationHours.value) || 12,
         expiredMessage: elements.expiredMessage.value.trim(),
         notificationEmail: elements.notificationEmail.value.trim(),
+        gameStakeOptions: normalizeGameStakeOptions(currentSettings.gameStakeOptions).map((item) => ({
+          id: item.id,
+          stakeDoes: item.stakeDoes,
+          enabled: item.enabled === true,
+          sortOrder: item.sortOrder,
+        })),
         updatedAt: new Date().toISOString()
       };
 
       try {
-        const snapshot = await getDocs(collection(db, SETTINGS));
-        if (snapshot.empty) {
-          await addDoc(collection(db, SETTINGS), {
-            ...settingsData,
-            createdAt: new Date().toISOString()
-          });
-        } else {
-          await updateDoc(doc(db, SETTINGS, snapshot.docs[0].id), settingsData);
-        }
+        await setDoc(doc(db, SETTINGS, APP_PUBLIC_SETTINGS_DOC), {
+          ...settingsData,
+          createdAt: currentSettings.createdAt || new Date().toISOString(),
+        }, { merge: true });
+        settings = {
+          ...currentSettings,
+          ...settingsData,
+          gameStakeOptions: normalizeGameStakeOptions(settingsData.gameStakeOptions),
+        };
+        renderGameStakeConfig();
         
         showToast('Paramètres enregistrés', 'success');
         
@@ -3826,6 +3981,62 @@
       });
       
       // Paramètres
+      elements.addGameStakeBtn?.addEventListener('click', () => {
+        const currentSettings = ensureSettingsState();
+        const usedStakes = currentSettings.gameStakeOptions.map((item) => safeInt(item.stakeDoes)).filter(Boolean);
+        const nextStake = Math.max(100, ...(usedStakes.length ? usedStakes : [0])) + 100;
+        currentSettings.gameStakeOptions.push({
+          id: `stake_${nextStake}`,
+          stakeDoes: nextStake,
+          enabled: false,
+          sortOrder: ((currentSettings.gameStakeOptions.length + 1) * 10),
+          rewardDoes: buildStakeRewardDoes(nextStake),
+        });
+        currentSettings.gameStakeOptions = normalizeGameStakeOptions(currentSettings.gameStakeOptions);
+        renderGameStakeConfig();
+      });
+
+      elements.gameStakeConfigList?.addEventListener('click', (event) => {
+        const removeBtn = event.target.closest('[data-stake-remove]');
+        if (!removeBtn) return;
+        const index = safeInt(removeBtn.getAttribute('data-stake-remove'));
+        const currentSettings = ensureSettingsState();
+        if (currentSettings.gameStakeOptions.length <= 1) {
+          showToast('Garde au moins une mise configurée.', 'error');
+          return;
+        }
+        currentSettings.gameStakeOptions.splice(index, 1);
+        currentSettings.gameStakeOptions = normalizeGameStakeOptions(
+          currentSettings.gameStakeOptions.map((item, itemIndex) => ({
+            ...item,
+            sortOrder: ((itemIndex + 1) * 10),
+          }))
+        );
+        renderGameStakeConfig();
+      });
+
+      elements.gameStakeConfigList?.addEventListener('change', (event) => {
+        const field = event.target?.getAttribute?.('data-stake-field');
+        if (!field) return;
+        const index = safeInt(event.target.getAttribute('data-stake-index'));
+        const currentSettings = ensureSettingsState();
+        if (!currentSettings.gameStakeOptions[index]) return;
+
+        if (field === 'stakeDoes') {
+          currentSettings.gameStakeOptions[index].stakeDoes = safeInt(event.target.value);
+        } else if (field === 'enabled') {
+          currentSettings.gameStakeOptions[index].enabled = !!event.target.checked;
+        }
+
+        currentSettings.gameStakeOptions = normalizeGameStakeOptions(
+          currentSettings.gameStakeOptions.map((item, itemIndex) => ({
+            ...item,
+            sortOrder: ((itemIndex + 1) * 10),
+          }))
+        );
+        renderGameStakeConfig();
+      });
+
       elements.saveSettingsBtn.addEventListener('click', saveSettings);
       elements.dashboardNotifToggle.addEventListener('change', toggleDashboardNotifications);
       elements.enableDashboardNotifBtn.addEventListener('click', enableDashboardNotifications);

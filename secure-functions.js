@@ -92,6 +92,10 @@ export async function getPublicPaymentOptionsSecure(payload = {}) {
   return invokeCallable("getPublicPaymentOptionsSecure", payload, "Impossible de charger les options de paiement.");
 }
 
+export async function getPublicGameStakeOptionsSecure(payload = {}) {
+  return invokeCallable("getPublicGameStakeOptionsSecure", payload, "Impossible de charger les mises de partie.");
+}
+
 export async function getGlobalAnalyticsSnapshotSecure(payload = {}) {
   return invokeCallable("getGlobalAnalyticsSnapshot", payload, "Impossible de charger les analytics globaux.");
 }

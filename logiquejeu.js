@@ -28,8 +28,7 @@ const ACTION_CACHE_PREFIX = "domino_actions_";
 const ROOM_SETTLEMENT_PREFIX = "domino_settle_";
 const HOW_TO_PLAY_STORAGE_KEY = "domino_how_to_play_seen_v1";
 const DEFAULT_ENTRY_COST_DOES = 100;
-const ALLOWED_STAKES_DOES = new Set([DEFAULT_ENTRY_COST_DOES]);
-const WIN_REWARD_DOES = 300;
+const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
 const ONLINE_USERS_MIN = 30000;
 const ONLINE_USERS_MAX = 100000;
 const URL_PARAMS = new URLSearchParams(window.location.search);
@@ -39,9 +38,43 @@ function resolveEntryCostDoes(searchParams) {
   const rawStake = searchParams.get("stake");
   if (!rawStake) return DEFAULT_ENTRY_COST_DOES;
   const parsed = Number.parseInt(rawStake, 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_ENTRY_COST_DOES;
-  if (ALLOWED_STAKES_DOES.has(parsed)) return parsed;
-  return DEFAULT_ENTRY_COST_DOES;
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_ENTRY_COST_DOES;
+  return Math.floor(parsed);
+}
+
+function resolveRewardDoesFromEntry(entryCostDoes) {
+  const parsed = Number.parseInt(String(entryCostDoes || 0), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_ENTRY_COST_DOES * DEFAULT_STAKE_REWARD_MULTIPLIER;
+  }
+  return Math.floor(parsed) * DEFAULT_STAKE_REWARD_MULTIPLIER;
+}
+
+function resolveRoomRewardDoes(roomData = {}) {
+  const explicit = Number.parseInt(String(roomData?.rewardAmountDoes || 0), 10);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+  return resolveRewardDoesFromEntry(roomData?.entryCostDoes || roomData?.stakeDoes || DEFAULT_ENTRY_COST_DOES);
+}
+
+function getSessionRewardDoes() {
+  return resolveRoomRewardDoes(window.GameSession || {});
+}
+
+function getSessionEntryCostDoes() {
+  return Number.parseInt(String(window.GameSession?.entryCostDoes || ENTRY_COST_DOES_RESOLVED), 10) || DEFAULT_ENTRY_COST_DOES;
+}
+
+function getCurrentRoomRewardDoes(roomData = null) {
+  if (roomData) return resolveRoomRewardDoes(roomData);
+  return getSessionRewardDoes();
+}
+
+function getCurrentRoomEntryCostDoes(roomData = null) {
+  if (roomData) {
+    const explicit = Number.parseInt(String(roomData?.entryCostDoes || roomData?.stakeDoes || 0), 10);
+    if (Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+  }
+  return getSessionEntryCostDoes();
 }
 
 const ENTRY_COST_DOES_RESOLVED = resolveEntryCostDoes(URL_PARAMS);
@@ -836,9 +869,13 @@ async function handleEndedRoom(roomData) {
 
   try {
     const rewardRes = await claimWinRewardSecure({ roomId });
+    const rewardAmountDoes = Number.parseInt(
+      String(rewardRes?.rewardAmountDoes || getCurrentRoomRewardDoes(roomData)),
+      10
+    ) || getCurrentRoomRewardDoes(roomData);
     if (rewardRes?.rewardGranted === true) {
       writeSettlement(roomId, user.uid, { entryPaid: true, rewardPaid: true });
-      setStatus(`Victoire: +${WIN_REWARD_DOES} Does.`);
+      setStatus(`Victoire: +${rewardAmountDoes} Does.`);
       refreshDoesHud();
     } else {
       writeSettlement(roomId, user.uid, { entryPaid: true, rewardPaid: true });
@@ -997,6 +1034,8 @@ function launchLocalGame(roomData) {
     currentPlayer: typeof roomData.currentPlayer === "number" ? roomData.currentPlayer : 0,
     turnActual: typeof roomData.turnActual === "number" ? roomData.turnActual : 0,
     lastActionSeq: typeof roomData.lastActionSeq === "number" ? roomData.lastActionSeq : -1,
+    entryCostDoes: getCurrentRoomEntryCostDoes(roomData),
+    rewardAmountDoes: getCurrentRoomRewardDoes(roomData),
     deckOrder: Array.isArray(roomData.deckOrder) ? roomData.deckOrder : [],
   };
   if (gameLaunched) return;
@@ -1005,7 +1044,7 @@ function launchLocalGame(roomData) {
   updateOrientationGuard();
 
   setStatus(
-    `Salle ${roomId} | Seat ${seatIndex + 1} | Humains ${window.GameSession.humans} | Bots ${window.GameSession.bots}`
+    `Salle ${roomId} | Mise ${window.GameSession.entryCostDoes} Does | Gain ${window.GameSession.rewardAmountDoes} Does | Seat ${seatIndex + 1} | Humains ${window.GameSession.humans} | Bots ${window.GameSession.bots}`
   );
 
   if (window.Domino && window.Domino.Partida) {

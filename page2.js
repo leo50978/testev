@@ -2,15 +2,72 @@ import { mountProfileModal } from "./profil.js";
 import { mountSoldeModal } from "./solde.js";
 import { ensureXchangeState, getXchangeState } from "./xchange.js";
 import { withButtonLoading } from "./loading-ui.js";
+import { getPublicGameStakeOptionsSecure } from "./secure-functions.js";
 import { db, collection, query, orderBy, limit, onSnapshot, doc, setDoc, serverTimestamp } from "./firebase-init.js";
 
 const CHAT_COLLECTION = "globalChannelMessages";
 const SUPPORT_THREADS_COLLECTION = "supportThreads";
+const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
+const DEFAULT_GAME_STAKE_OPTIONS = Object.freeze([
+  Object.freeze({ id: "stake_100", stakeDoes: 100, rewardDoes: 300, enabled: true, sortOrder: 10 }),
+  Object.freeze({ id: "stake_500", stakeDoes: 500, rewardDoes: 1500, enabled: false, sortOrder: 20 }),
+  Object.freeze({ id: "stake_1000", stakeDoes: 1000, rewardDoes: 3000, enabled: false, sortOrder: 30 }),
+  Object.freeze({ id: "stake_5000", stakeDoes: 5000, rewardDoes: 15000, enabled: false, sortOrder: 40 }),
+]);
 let page2ChatLatestUnsub = null;
 let page2ChatSeenUnsub = null;
 let page2SupportThreadUnsub = null;
 let page2PresenceVisibilityBound = false;
 let page2PresenceUser = null;
+
+function safeInt(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? Math.max(0, Math.floor(num)) : 0;
+}
+
+function buildStakeRewardDoes(stakeDoes) {
+  return safeInt(stakeDoes) * DEFAULT_STAKE_REWARD_MULTIPLIER;
+}
+
+function normalizeGameStakeOptions(rawOptions) {
+  const source = Array.isArray(rawOptions) && rawOptions.length ? rawOptions : DEFAULT_GAME_STAKE_OPTIONS;
+  const byStake = new Map();
+
+  source.forEach((raw, index) => {
+    const stakeDoes = safeInt(raw?.stakeDoes);
+    if (stakeDoes <= 0) return;
+    if (byStake.has(stakeDoes)) return;
+
+    const sortOrderRaw = Number(raw?.sortOrder);
+    const sortOrder = Number.isFinite(sortOrderRaw) ? Math.trunc(sortOrderRaw) : ((index + 1) * 10);
+    const rewardDoes = safeInt(raw?.rewardDoes) || buildStakeRewardDoes(stakeDoes);
+
+    byStake.set(stakeDoes, {
+      id: String(raw?.id || `stake_${stakeDoes}`).trim() || `stake_${stakeDoes}`,
+      stakeDoes,
+      rewardDoes,
+      enabled: raw?.enabled !== false,
+      sortOrder,
+    });
+  });
+
+  const normalized = Array.from(byStake.values()).sort((left, right) => {
+    if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder;
+    return left.stakeDoes - right.stakeDoes;
+  });
+
+  return normalized.length ? normalized : DEFAULT_GAME_STAKE_OPTIONS.map((item) => ({ ...item }));
+}
+
+async function loadPublicGameStakeOptions() {
+  try {
+    const response = await getPublicGameStakeOptionsSecure();
+    return normalizeGameStakeOptions(response?.options);
+  } catch (error) {
+    console.warn("[GAME_STAKES] fallback local options", error);
+    return normalizeGameStakeOptions();
+  }
+}
 
 function stopPage2ChatWatchers() {
   if (page2ChatLatestUnsub) {
@@ -232,7 +289,7 @@ export function renderPage2(user) {
 
           <div>
             <p class="font-semibold text-white">🎯 Participation</p>
-            <p class="mt-1">Chaque partie coûte 100 Does.</p>
+            <p class="mt-1">Chaque partie coûte la mise sélectionnée avant l'entrée en salle.</p>
             <p>Le montant est automatiquement déduit du solde lors de l’inscription à une partie.</p>
             <p>Une partie démarre uniquement lorsqu’il y a au moins 4 joueurs.</p>
           </div>
@@ -240,7 +297,7 @@ export function renderPage2(user) {
           <div>
             <p class="font-semibold text-white">🏆 Gains</p>
             <p class="mt-1">Il y a un seul gagnant par partie.</p>
-            <p>Le gagnant reçoit 300 Does.</p>
+            <p>Le gagnant reçoit le gain associé à la mise de la salle.</p>
             <p>Les autres participants ne récupèrent pas leur mise.</p>
           </div>
 
@@ -293,21 +350,12 @@ export function renderPage2(user) {
           </button>
         </div>
         <p class="mt-2 text-sm text-white/90">
-          Quand vous cliquez sur un des boutons, le jeu débute et la somme Does du bouton sélectionné est automatiquement pariée.
+          Quand vous cliquez sur un des boutons, le jeu débute et la mise sélectionnée est automatiquement pariée selon la configuration active.
         </p>
-        <div class="mt-5 grid grid-cols-2 gap-3">
-          <button data-stake="100" data-available="1" type="button" class="stake-option-btn h-12 rounded-2xl border border-[#ffb26e] bg-[#F57C00] text-sm font-semibold text-white shadow-[8px_8px_18px_rgba(163,82,27,0.45),-6px_-6px_14px_rgba(255,175,102,0.22)] transition hover:-translate-y-0.5">
-            100 Does
-          </button>
-          <button data-stake="500" data-available="0" type="button" class="stake-option-btn h-12 rounded-2xl border border-white/20 bg-white/10 text-sm font-semibold text-white/65 opacity-55 transition cursor-not-allowed">
-            500 Does
-          </button>
-          <button data-stake="1000" data-available="0" type="button" class="stake-option-btn h-12 rounded-2xl border border-white/20 bg-white/10 text-sm font-semibold text-white/65 opacity-55 transition cursor-not-allowed">
-            1000 Does
-          </button>
-          <button data-stake="5000" data-available="0" type="button" class="stake-option-btn h-12 rounded-2xl border border-white/20 bg-white/10 text-sm font-semibold text-white/65 opacity-55 transition cursor-not-allowed">
-            5000 Does
-          </button>
+        <div id="stakeOptionsGrid" class="mt-5 grid grid-cols-2 gap-3">
+          <div class="col-span-2 rounded-2xl border border-white/15 bg-white/5 px-4 py-4 text-sm text-white/70">
+            Chargement des mises...
+          </div>
         </div>
       </div>
     </div>
@@ -380,7 +428,7 @@ export function renderPage2(user) {
   const stakeSelectionOverlay = document.getElementById("stakeSelectionOverlay");
   const stakeSelectionPanel = document.getElementById("stakeSelectionPanel");
   const stakeSelectionClose = document.getElementById("stakeSelectionClose");
-  const stakeButtons = Array.from(document.querySelectorAll(".stake-option-btn"));
+  const stakeOptionsGrid = document.getElementById("stakeOptionsGrid");
   const stakeUnavailableOverlay = document.getElementById("stakeUnavailableOverlay");
   const stakeUnavailablePanel = document.getElementById("stakeUnavailablePanel");
   const stakeUnavailableClose = document.getElementById("stakeUnavailableClose");
@@ -438,6 +486,43 @@ export function renderPage2(user) {
     stakeUnavailableOverlay.classList.remove("flex");
   };
 
+  let currentStakeOptions = normalizeGameStakeOptions();
+
+  const renderStakeOptions = (options = []) => {
+    currentStakeOptions = normalizeGameStakeOptions(options);
+    if (!stakeOptionsGrid) return;
+    stakeOptionsGrid.innerHTML = currentStakeOptions.map((option) => {
+      const enabled = option.enabled === true;
+      const classes = enabled
+        ? "stake-option-btn h-14 rounded-2xl border border-[#ffb26e] bg-[#F57C00] text-sm font-semibold text-white shadow-[8px_8px_18px_rgba(163,82,27,0.45),-6px_-6px_14px_rgba(255,175,102,0.22)] transition hover:-translate-y-0.5"
+        : "stake-option-btn h-14 rounded-2xl border border-white/20 bg-white/10 text-sm font-semibold text-white/65 opacity-55 transition cursor-not-allowed";
+      const badge = enabled
+        ? `<span class="text-[11px] font-medium text-white/75">Gain ${option.rewardDoes} Does</span>`
+        : `<span class="text-[11px] font-medium text-white/55">Indisponible</span>`;
+      return `
+        <button
+          data-stake="${option.stakeDoes}"
+          data-available="${enabled ? "1" : "0"}"
+          type="button"
+          class="${classes}"
+        >
+          <span class="block">${option.stakeDoes} Does</span>
+          ${badge}
+        </button>
+      `;
+    }).join("");
+  };
+
+  renderStakeOptions();
+  loadPublicGameStakeOptions()
+    .then((options) => {
+      renderStakeOptions(options);
+    })
+    .catch((error) => {
+      console.warn("[GAME_STAKES] render fallback", error);
+      renderStakeOptions();
+    });
+
   if (startGameBtn) {
     startGameBtn.addEventListener("click", () => {
       openStakeSelection();
@@ -464,8 +549,10 @@ export function renderPage2(user) {
     stakeUnavailablePanel.addEventListener("click", (ev) => ev.stopPropagation());
   }
 
-  stakeButtons.forEach((btn) => {
-    btn.addEventListener("click", async () => {
+  if (stakeOptionsGrid) {
+    stakeOptionsGrid.addEventListener("click", async (event) => {
+      const btn = event.target.closest(".stake-option-btn");
+      if (!btn || !stakeOptionsGrid.contains(btn)) return;
       const available = btn.getAttribute("data-available") === "1";
       if (!available) {
         openUnavailable();
@@ -488,7 +575,7 @@ export function renderPage2(user) {
         window.location.href = `./jeu.html?autostart=1&stake=${stakeAmount}`;
       }, { loadingLabel: "Vérification..." });
     });
-  });
+  }
 
   if (doesRequiredClose) {
     doesRequiredClose.addEventListener("click", () => {
