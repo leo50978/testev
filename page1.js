@@ -30,6 +30,7 @@ let referralBootstrapPromise = null;
 let authBootstrapReady = false;
 let authStateResolved = false;
 let latestObservedUser = undefined;
+let authFallbackRenderTimer = null;
 const PENDING_PROMO_STORAGE_KEY = "domino_pending_promo_code";
 const CLIENT_DEVICE_STORAGE_KEY = "domino_device_id_v1";
 const verificationEmailSentByUid = new Set();
@@ -118,6 +119,25 @@ function collectAnalyticsContext() {
     utmCampaign: String(params.get("utm_campaign") || ""),
     creativeId: String(params.get("creative_id") || params.get("creativeId") || ""),
   };
+}
+
+function clearAuthFallbackRenderTimer() {
+  if (authFallbackRenderTimer) {
+    window.clearTimeout(authFallbackRenderTimer);
+    authFallbackRenderTimer = null;
+  }
+}
+
+function scheduleAuthFallbackRender(delayMs = 1200) {
+  clearAuthFallbackRenderTimer();
+  authFallbackRenderTimer = window.setTimeout(() => {
+    authFallbackRenderTimer = null;
+    if (redirectingToApp) return;
+    if (auth.currentUser) return;
+    if (latestObservedUser !== null) return;
+    if (authBootstrapReady !== true || authStateResolved !== true) return;
+    renderPage1();
+  }, Math.max(250, Number(delayMs) || 1200));
 }
 
 function userRequiresEmailVerification(user) {
@@ -436,6 +456,7 @@ async function bootstrapReferralBeforeRedirect(user, explicitPromoCode = "") {
 
 async function handleAuthenticatedUser(user, explicitPromoCode = "") {
   if (!user) return;
+  clearAuthFallbackRenderTimer();
   if (userRequiresEmailVerification(user)) {
     await showEmailVerificationModal(user);
     return;
@@ -855,7 +876,7 @@ completeGoogleRedirectIfAny()
   .finally(() => {
     authBootstrapReady = true;
     if (latestObservedUser === null && authStateResolved === true && redirectingToApp === false) {
-      renderPage1();
+      scheduleAuthFallbackRender();
     }
   });
 
@@ -908,6 +929,7 @@ watchAuthState((user) => {
   authStateResolved = true;
   latestObservedUser = user || null;
   if (user) {
+    clearAuthFallbackRenderTimer();
     handleAuthenticatedUser(user).catch((err) => {
       console.error("Auth state redirect error:", err);
       if (userRequiresEmailVerification(user)) {
@@ -922,5 +944,5 @@ watchAuthState((user) => {
   }
   redirectingToApp = false;
   if (authBootstrapReady !== true) return;
-  renderPage1();
+  scheduleAuthFallbackRender();
 });

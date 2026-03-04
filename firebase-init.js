@@ -72,10 +72,10 @@ function resolveRuntimeAuthDomain(defaultAuthDomain) {
   if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local")) {
     return defaultAuthDomain;
   }
-  if (host.endsWith(".firebaseapp.com") || host.endsWith(".web.app")) {
-    return host;
+  if (host === "www.dominoeslakay.com") {
+    return "dominoeslakay.com";
   }
-  return defaultAuthDomain;
+  return host;
 }
 
 firebaseConfig.authDomain = resolveRuntimeAuthDomain(firebaseConfig.authDomain);
