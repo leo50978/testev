@@ -98,6 +98,12 @@ function isGoogleRedirectSupportedOnCurrentHost() {
   return true;
 }
 
+function isFirebaseHostedDomain() {
+  if (typeof window === "undefined") return false;
+  const host = String(window.location?.hostname || "").trim().toLowerCase();
+  return host.endsWith(".firebaseapp.com") || host.endsWith(".web.app");
+}
+
 function shouldPreferGoogleRedirect() {
   if (typeof window === "undefined") return false;
 
@@ -151,7 +157,10 @@ async function waitForResolvedPopupUser(timeoutMs = 4500) {
 async function loginWithGoogle() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
-  const canUseRedirect = isGoogleRedirectSupportedOnCurrentHost();
+  // Keep redirect flow only on Firebase-hosted domains.
+  // On custom-hosted fronts (ex: GitHub Pages + custom domain), popup is
+  // significantly more reliable and avoids redirect-return loops.
+  const canUseRedirect = isGoogleRedirectSupportedOnCurrentHost() && isFirebaseHostedDomain();
 
   if (canUseRedirect && shouldPreferGoogleRedirect()) {
     await signInWithRedirect(auth, provider);
