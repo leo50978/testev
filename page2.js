@@ -288,30 +288,34 @@ export function renderPage2(user) {
           </div>
 
           <div>
-            <p class="font-semibold text-white">🎯 Participation</p>
-            <p class="mt-1">Chaque partie coûte la mise sélectionnée avant l'entrée en salle.</p>
-            <p>Le montant est automatiquement déduit du solde lors de l’inscription à une partie.</p>
-            <p>Une partie démarre uniquement lorsqu’il y a au moins 4 joueurs.</p>
+            <p class="font-semibold text-white">🎯 Lancer une partie</p>
+            <p class="mt-1">Avant d'entrer en salle, tu choisis une mise parmi les options disponibles.</p>
+            <p>Le montant choisi est automatiquement déduit de ton solde au moment de l'inscription.</p>
+            <p>Une salle regroupe uniquement des joueurs ayant choisi la même mise.</p>
+            <p>La partie démarre dès que les 4 places sont remplies.</p>
           </div>
 
           <div>
             <p class="font-semibold text-white">🏆 Gains</p>
             <p class="mt-1">Il y a un seul gagnant par partie.</p>
-            <p>Le gagnant reçoit le gain associé à la mise de la salle.</p>
-            <p>Les autres participants ne récupèrent pas leur mise.</p>
+            <p>Le gagnant reçoit 3 fois la mise de la salle.</p>
+            <p>Exemple: 100 Does misés donnent 300 Does au gagnant, 500 donnent 1500.</p>
+            <p>Les autres participants perdent uniquement la mise engagée.</p>
           </div>
 
           <div>
-            <p class="font-semibold text-white">🔁 Conditions de jeu</p>
-            <p class="mt-1">Un joueur peut participer à plusieurs parties tant qu’il dispose d’un solde suffisant.</p>
-            <p>Les Does ne peuvent être utilisés que sur la plateforme.</p>
+            <p class="font-semibold text-white">🀄 Comment jouer</p>
+            <p class="mt-1">Pour poser un domino, clique simplement sur la pièce que tu veux jouer.</p>
+            <p>Si cette pièce peut être jouée par deux côtés, clique directement sur la valeur que tu veux utiliser.</p>
+            <p>Exemple: avec un domino 6-3, clique sur 6 ou sur 3 selon le côté choisi.</p>
           </div>
 
           <div>
-            <p class="font-semibold text-white">📌 Règles générales</p>
-            <p class="mt-1">Toute tentative de fraude entraîne la suspension du compte.</p>
+            <p class="font-semibold text-white">📌 Conditions générales</p>
+            <p class="mt-1">Tu peux rejoindre autant de parties que ton solde te le permet.</p>
+            <p>Seules les mises activées par la plateforme sont visibles et jouables.</p>
+            <p>Toute tentative de fraude entraîne la suspension du compte.</p>
             <p>La participation au jeu implique l’acceptation complète du règlement.</p>
-            <p>L’organisateur se réserve le droit de modifier les règles à tout moment si nécessaire.</p>
           </div>
         </div>
       </div>

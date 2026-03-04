@@ -359,6 +359,18 @@ var Domino_Ficha = function() {
                 Domino.Partida.JugadorActual = 0;
             }
             Domino.Partida.TurnoActual ++;
+            try {
+                var PayloadInstant = {
+                    ts: new Date().toISOString(),
+                    valores: this.Valores.slice(0),
+                    rama: this.Rama,
+                    direccion: this.Direccion,
+                    turnoActual: Domino.Partida.TurnoActual,
+                    jugadorActual: Domino.Partida.JugadorActual
+                };
+                console.log("[DOMINO_FICHA_DEBUG] Colocar:instant " + JSON.stringify(PayloadInstant), PayloadInstant);
+            } catch (_) {
+            }
             return;
         }
         
@@ -389,6 +401,18 @@ var Domino_Ficha = function() {
                     Domino.Partida.JugadorActual = 0;
                 }
                 Domino.Partida.TurnoActual ++;
+                try {
+                    var PayloadDone = {
+                        ts: new Date().toISOString(),
+                        valores: this.Valores.slice(0),
+                        rama: this.Rama,
+                        direccion: this.Direccion,
+                        turnoActual: Domino.Partida.TurnoActual,
+                        jugadorActual: Domino.Partida.JugadorActual
+                    };
+                    console.log("[DOMINO_FICHA_DEBUG] Colocar:done " + JSON.stringify(PayloadDone), PayloadDone);
+                } catch (_) {
+                }
                 
             }.bind(this)
             

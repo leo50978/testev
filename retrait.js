@@ -38,6 +38,18 @@ function safeInt(value) {
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
 }
 
+function resolveMethodAssetPath(value) {
+  const out = String(value || "").trim();
+  if (!out) return "";
+
+  const baseValue = out.replace(/\\/g, "/").split(/[?#]/)[0];
+  const fileName = baseValue.split("/").pop() || "";
+  if (!/^[a-zA-Z0-9._-]+\.(png|jpe?g|gif|webp|svg)$/i.test(fileName)) {
+    return "";
+  }
+  return `./${fileName}`;
+}
+
 function computeOrderAmount(order) {
   if (typeof order?.amount === "number" && Number.isFinite(order.amount)) {
     return safeInt(order.amount);
@@ -244,11 +256,13 @@ function ensureRetraitModal() {
       methodsEl.innerHTML = `<p class="text-sm text-white/75">Aucune méthode active.</p>`;
       return;
     }
-    methodsEl.innerHTML = methods.map((m) => `
+    methodsEl.innerHTML = methods.map((m) => {
+      const imagePath = resolveMethodAssetPath(m.image);
+      return `
       <button type="button" data-method-id="${escapeHtml(m.id)}" class="retrait-method w-full rounded-xl border border-white/20 bg-white/10 p-3 text-left text-white transition hover:bg-white/15">
         <div class="flex items-center gap-3">
-          ${m.image ? `
-            <img src="${escapeHtml(m.image)}" alt="${escapeHtml(m.name || "Méthode")}" class="h-10 w-10 rounded-xl object-cover border border-white/15 bg-white/10" onerror="this.style.display='none'">
+          ${imagePath ? `
+            <img src="${escapeHtml(imagePath)}" alt="${escapeHtml(m.name || "Méthode")}" class="h-10 w-10 rounded-xl object-cover border border-white/15 bg-white/10" onerror="this.style.display='none'">
           ` : `
             <div class="grid h-10 w-10 place-items-center rounded-xl border border-white/15 bg-white/10">
               <i class="fa-solid fa-wallet text-white/80"></i>
@@ -257,7 +271,8 @@ function ensureRetraitModal() {
           <p class="text-sm font-semibold">${escapeHtml(m.name || "Méthode")}</p>
         </div>
       </button>
-    `).join("");
+    `;
+    }).join("");
 
     methodsEl.querySelectorAll(".retrait-method").forEach((btn) => {
       btn.addEventListener("click", () => {

@@ -84,8 +84,13 @@ function escapeAttr(value) {
 function sanitizeAsset(value) {
   const out = String(value || '').trim();
   if (!out) return '';
-  if (/^(https:\/\/|\.\/|\/)/i.test(out)) return out;
-  return '';
+
+  const baseValue = out.replace(/\\/g, '/').split(/[?#]/)[0];
+  const fileName = baseValue.split('/').pop() || '';
+  if (!/^[a-zA-Z0-9._-]+\.(png|jpe?g|gif|webp|svg)$/i.test(fileName)) {
+    return '';
+  }
+  return fileName;
 }
 
 class PaymentModal {

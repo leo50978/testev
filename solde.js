@@ -379,12 +379,30 @@ function ensureSoldeModal() {
   const existing = document.getElementById("soldeModalOverlay");
   if (existing) return existing;
 
+  if (!document.getElementById("soldeModalScrollStyle")) {
+    const style = document.createElement("style");
+    style.id = "soldeModalScrollStyle";
+    style.textContent = `
+      #soldePanel {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+
+      #soldePanel::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+        display: none;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
   const overlay = document.createElement("div");
   overlay.id = "soldeModalOverlay";
   overlay.className = "fixed inset-0 z-[3100] hidden items-center justify-center bg-black/45 p-4 backdrop-blur-sm";
 
   overlay.innerHTML = `
-    <div id="soldePanel" class="w-full max-w-2xl rounded-3xl border border-white/20 bg-[#3F4766]/55 p-5 shadow-[14px_14px_34px_rgba(16,23,40,0.5),-10px_-10px_24px_rgba(112,126,165,0.2)] backdrop-blur-xl sm:p-6">
+    <div id="soldePanel" class="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-3xl border border-white/20 bg-[#3F4766]/55 p-5 shadow-[14px_14px_34px_rgba(16,23,40,0.5),-10px_-10px_24px_rgba(112,126,165,0.2)] backdrop-blur-xl sm:p-6">
       <div class="flex items-start justify-between">
         <div>
           <p class="text-xs font-semibold uppercase tracking-[0.16em] text-white/70">Solde</p>

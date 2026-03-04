@@ -50,8 +50,22 @@ service cloud.firestore {
     }
 
     function canCreateDpaymentBootstrap() {
-      return !exists(/databases/$(database)/documents/settings/dpayment_admin_bootstrap)
-        && request.resource.data.email == "leovitch2004@gmail.com";
+      return signedIn()
+        && !exists(/databases/$(database)/documents/settings/dpayment_admin_bootstrap)
+        && request.auth.token.email != null
+        && request.auth.token.email == "leovitch2004@gmail.com"
+        && request.resource.data.keys().hasOnly([
+          "email",
+          "createdByUid",
+          "createdAt",
+          "updatedAt",
+          "locked",
+          "mode",
+        ])
+        && request.resource.data.email == "leovitch2004@gmail.com"
+        && request.resource.data.createdByUid == request.auth.uid
+        && request.resource.data.locked == true
+        && request.resource.data.mode == "email_password";
     }
 
     match /clients/{uid} {
@@ -113,7 +127,7 @@ service cloud.firestore {
     }
 
     match /settings/dpayment_admin_bootstrap {
-      allow read: if true;
+      allow read: if false;
       allow create: if canCreateDpaymentBootstrap();
       allow update, delete: if isFinanceAdmin();
     }
@@ -129,6 +143,10 @@ service cloud.firestore {
     match /ambassadors/{ambassadorId} {
       allow read: if true;
       allow write: if isFinanceAdmin();
+
+      match /private/{docId} {
+        allow read, write: if isFinanceAdmin();
+      }
 
       match /referrals/{referralId} {
         allow read: if true;

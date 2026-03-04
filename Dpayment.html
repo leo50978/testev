@@ -1209,6 +1209,7 @@
     const functions = getFunctions(app);
     const adminCheckCallable = httpsCallable(functions, 'adminCheck');
     const migrateAmbassadorSecretsCallable = httpsCallable(functions, 'migrateAmbassadorSecrets');
+    const bootstrapConfigCallable = httpsCallable(functions, 'getDpaymentBootstrapConfig');
     const dashboardNotifier = new NotificationComponent({
       mode: 'dashboard',
       defaultUrl: './Dpayment.html',
@@ -1779,6 +1780,31 @@
         .replaceAll("'", '&#39;');
     }
 
+    function normalizePaymentAssetName(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      const baseValue = raw.replaceAll('\\', '/').split(/[?#]/)[0];
+      const fileName = baseValue.split('/').pop() || '';
+      if (!/^[a-zA-Z0-9._-]+\.(png|jpe?g|gif|webp|svg)$/i.test(fileName)) {
+        return '';
+      }
+      return fileName;
+    }
+
+    function resolvePaymentAssetPath(value) {
+      const normalized = normalizePaymentAssetName(value);
+      if (!normalized) return '';
+      return `./${normalized}`;
+    }
+
+    function normalizePaymentMethodRecord(method) {
+      return {
+        ...method,
+        image: normalizePaymentAssetName(method?.image),
+        qrCode: normalizePaymentAssetName(method?.qrCode),
+      };
+    }
+
     function formatItemOptions(item) {
       const opts = item?.selectedOptions;
       if (!Array.isArray(opts) || opts.length === 0) return '-';
@@ -1963,7 +1989,7 @@
     async function loadMethods() {
       try {
         const snapshot = await getDocs(collection(db, PAYMENT_METHODS));
-        methods = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        methods = snapshot.docs.map(doc => normalizePaymentMethodRecord({ id: doc.id, ...doc.data() }));
         renderMethods();
         return methods;
       } catch (error) {
@@ -2076,18 +2102,18 @@
         return adminBootstrapConfig;
       }
 
-      const snap = await getDoc(getAdminBootstrapRef());
-      if (!snap.exists()) {
+      const response = await bootstrapConfigCallable({});
+      const data = response?.data && typeof response.data === 'object' ? response.data : {};
+      const email = String(data.email || '').trim().toLowerCase();
+      const bootstrapped = data.bootstrapped === true && !!email;
+      if (!bootstrapped) {
         adminBootstrapConfig = null;
         return null;
       }
-
-      const data = snap.data() || {};
-      const email = String(data.email || '').trim().toLowerCase();
       adminBootstrapConfig = email ? {
         email,
-        createdByUid: String(data.createdByUid || '').trim(),
-        createdAt: data.createdAt || null,
+        createdByUid: '',
+        createdAt: null,
       } : null;
       return adminBootstrapConfig;
     }
@@ -2835,9 +2861,16 @@
           </div>
           
           <div class="flex items-center gap-3 mb-3">
-            <div class="w-10 h-10 bg-background rounded-xl flex items-center justify-center">
-              <i class="fas fa-credit-card text-text-secondary"></i>
-            </div>
+            ${resolvePaymentAssetPath(method.image) ? `
+              <img src="${escapeHtml(resolvePaymentAssetPath(method.image))}" alt="${escapeHtml(method.name || 'Méthode')}" class="w-10 h-10 rounded-xl object-cover border border-border bg-background" onerror="this.style.display='none';if(this.nextElementSibling){this.nextElementSibling.classList.remove('hidden');}">
+              <div class="w-10 h-10 bg-background rounded-xl flex items-center justify-center hidden">
+                <i class="fas fa-credit-card text-text-secondary"></i>
+              </div>
+            ` : `
+              <div class="w-10 h-10 bg-background rounded-xl flex items-center justify-center">
+                <i class="fas fa-credit-card text-text-secondary"></i>
+              </div>
+            `}
             <div>
               <h3 class="font-medium">${method.name}</h3>
               <span class="badge ${method.isActive ? 'badge-approved' : 'badge-pending'}">
@@ -3744,13 +3777,28 @@
 
     async function saveMethod(e) {
       e.preventDefault();
+
+      const rawMethodImage = elements.methodImage.value.trim();
+      const rawQrCode = elements.qrCode.value.trim();
+      const normalizedMethodImage = normalizePaymentAssetName(rawMethodImage);
+      const normalizedQrCode = normalizePaymentAssetName(rawQrCode);
+
+      if (rawMethodImage && !normalizedMethodImage) {
+        showToast('Le logo doit être un nom de fichier image valide (ex: logo.png)', 'error');
+        return;
+      }
+
+      if (rawQrCode && !normalizedQrCode) {
+        showToast('Le QR code doit être un nom de fichier image valide (ex: qr.png)', 'error');
+        return;
+      }
       
       const methodData = {
         name: elements.methodName.value.trim(),
         accountName: elements.accountName.value.trim(),
         phoneNumber: elements.phoneNumber.value.trim(),
-        image: elements.methodImage.value.trim() || null,
-        qrCode: elements.qrCode.value.trim() || null,
+        image: normalizedMethodImage || null,
+        qrCode: normalizedQrCode || null,
         instructions: elements.instructions.value.trim(),
         isActive: elements.isActive.checked,
         updatedAt: new Date().toISOString()

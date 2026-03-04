@@ -31,6 +31,23 @@ var Domino_Partida = function() {
 
     this.Opciones = new Domino_Opciones;
 
+    this.DebugLog = function(Etiqueta, Datos) {
+        try {
+            var Payload = Object.assign({
+                ts: new Date().toISOString(),
+                turnoActual: this.TurnoActual,
+                jugadorActual: this.JugadorActual,
+                siguienteAccionSeq: this.SiguienteAccionSeq,
+                modoRehidratacion: this.ModoRehidratacion,
+                localSeat: this.LocalSeat,
+                esHost: this.EsHost
+            }, Datos || { });
+            console.log("[DOMINO_DEBUG] " + Etiqueta + " " + JSON.stringify(Payload), Payload);
+        }
+        catch (_) {
+        }
+    };
+
     this.CrearFichas = function() {
         if (this.Ficha.length !== 0) {
             for (var i = 0; i < 28; i++) {
@@ -260,6 +277,11 @@ var Domino_Partida = function() {
         if (typeof(this.AccionesPendientes[this.SiguienteAccionSeq]) === "undefined") return false;
         var Pendiente = this.AccionesPendientes[this.SiguienteAccionSeq];
         delete this.AccionesPendientes[this.SiguienteAccionSeq];
+        this.DebugLog("ProcesarPendientes", {
+            seq: Pendiente.seq,
+            type: Pendiente.type,
+            player: Pendiente.player
+        });
         this.AplicarAccionMultijugador(Pendiente);
         return true;
     };
@@ -282,6 +304,11 @@ var Domino_Partida = function() {
         }
 
         this.EsperandoPublicar = true;
+        this.DebugLog("PublicarAccion", {
+            actionType: accion && accion.type,
+            actionPlayer: accion && accion.player,
+            actionBranch: accion && accion.branch
+        });
         try {
             await window.LogiqueJeu.pushAction(accion);
         }
@@ -331,10 +358,12 @@ var Domino_Partida = function() {
         this.AccionesPendientes = {};
         this.ReintentosAccion = {};
         this.ReintentosTurno = {};
+        this.DebugLog("IniciarRehidratacion");
     };
 
     this.FinalizarRehidratacion = function() {
         this.ModoRehidratacion = false;
+        this.DebugLog("FinalizarRehidratacion");
         this.Turno();
     };
 
@@ -413,6 +442,11 @@ var Domino_Partida = function() {
     this.Turno = function() {
         if (this.ModoRehidratacion === true) return;
         if (this.ManoTerminada === true) return;
+        this.DebugLog("Turno:enter", {
+            tableroListo: this.TableroListo(),
+            esTurnoHumanoLocal: this.EsTurnoHumanoLocal(),
+            esTurnoHumanoRemoto: this.EsTurnoHumanoRemoto()
+        });
         if (this.Multijugador === true) {
             // Si hay una acción de red pendiente para el seq esperado, se aplica primero.
             if (this.ProcesarPendientes() === true) return;
@@ -425,6 +459,7 @@ var Domino_Partida = function() {
         if (this.Opciones.AniTurno === "true") Domino.AnimarLuz(this.VisualSeat(this.JugadorActual));
 
         if (this.Multijugador === true && this.TurnoActual > 0 && this.TableroListo() === false) {
+            this.DebugLog("Turno:waitingBoard");
             this.MostrarMensaje(this.LocalSeat, "<span data-idioma-en='Syncing board...' data-idioma-cat='Sincronitzant tauler...' data-idioma-es='Sincronizando tablero...'></span>", "negro");
             return;
         }
@@ -452,6 +487,9 @@ var Domino_Partida = function() {
                 return;
             }
 
+            this.DebugLog("Turno:waitingOpeningSync", {
+                openingSeat: this.JugadorActual
+            });
             this.MostrarMensaje(this.LocalSeat, "<span data-idioma-en='Syncing board...' data-idioma-cat='Sincronitzant tauler...' data-idioma-es='Sincronizando tablero...'></span>", "negro");
             return;
         }
@@ -508,24 +546,15 @@ var Domino_Partida = function() {
         }
 
         if (this.EsTurnoHumanoRemoto()) {
+            this.DebugLog("Turno:waitingHumanRemote");
             this.MostrarMensaje(this.LocalSeat,
                 "<span data-idioma-en='Waiting other player...' data-idioma-cat='Esperant altre jugador...' data-idioma-es='Esperando otro jugador...'></span>");
             return;
         }
 
-        if (this.EsHost) {
-            if (Posibilidades.length > 0) {
-                var Ia = Posibilidades[0];
-                this.PublicarAccion(this.CrearAccionPlay(this.JugadorActual, Ia.Pos, Ia.Rama));
-            }
-            else {
-                this.PublicarAccion({ type: "pass", player: this.JugadorActual });
-            }
-        }
-        else {
-            this.MostrarMensaje(this.LocalSeat,
-                "<span data-idioma-en='Waiting bot move...' data-idioma-cat='Esperant moviment del robot...' data-idioma-es='Esperando jugada del robot...'></span>");
-        }
+        this.DebugLog("Turno:waitingBot");
+        this.MostrarMensaje(this.LocalSeat,
+            "<span data-idioma-en='Waiting bot move...' data-idioma-cat='Esperant moviment del robot...' data-idioma-es='Esperando jugada del robot...'></span>");
     };
 
     this.MostrarAyuda = function() {
@@ -609,10 +638,20 @@ var Domino_Partida = function() {
     this.AplicarAccionMultijugador = function(Accion) {
         if (this.Multijugador === false || this.ManoTerminada === true) return;
 
+        this.DebugLog("AplicarAccion:begin", {
+            seq: Accion && Accion.seq,
+            type: Accion && Accion.type,
+            player: Accion && Accion.player,
+            branch: Accion && Accion.branch
+        });
         this.EsperandoPublicar = false;
         if (typeof(Accion.seq) === "number") {
             if (Accion.seq < this.SiguienteAccionSeq) return;
             if (Accion.seq > this.SiguienteAccionSeq) {
+                this.DebugLog("AplicarAccion:queueFuture", {
+                    seq: Accion.seq,
+                    expectedSeq: this.SiguienteAccionSeq
+                });
                 this.AccionesPendientes[Accion.seq] = Accion;
                 return;
             }
@@ -625,6 +664,12 @@ var Domino_Partida = function() {
                 var RT = this.ReintentosTurno[Accion.seq] || 0;
                 if (RT < 30) {
                     this.ReintentosTurno[Accion.seq] = RT + 1;
+                    this.DebugLog("AplicarAccion:retryTurn", {
+                        seq: Accion.seq,
+                        expectedPlayer: this.JugadorActual,
+                        actualPlayer: Accion.player,
+                        retries: this.ReintentosTurno[Accion.seq]
+                    });
                     setTimeout(function() { this.Turno(); }.bind(this), 90);
                     return;
                 }
@@ -644,6 +689,10 @@ var Domino_Partida = function() {
                 // Cas transitoire: on reessaie quelques fois avant de skipper.
                 if (retries < 20) {
                     this.ReintentosAccion[SeqKey] = retries + 1;
+                    this.DebugLog("AplicarAccion:retryPlay", {
+                        seq: Accion.seq,
+                        retries: this.ReintentosAccion[SeqKey]
+                    });
                     if (typeof(Accion.seq) === "number") {
                         this.AccionesPendientes[Accion.seq] = Accion;
                     }
@@ -667,6 +716,11 @@ var Domino_Partida = function() {
                 return;
             }
             var idx = idxResuelto;
+            this.DebugLog("AplicarAccion:playResolved", {
+                seq: Accion.seq,
+                idx: idx,
+                branch: Accion.branch
+            });
             if (typeof(Accion.seq) === "number") {
                 delete this.ReintentosAccion[Accion.seq];
                 delete this.ReintentosTurno[Accion.seq];
@@ -690,6 +744,10 @@ var Domino_Partida = function() {
             if (typeof(Accion.seq) === "number") {
                 this.SiguienteAccionSeq++;
             }
+            this.DebugLog("AplicarAccion:playApplied", {
+                seq: Accion.seq,
+                nextSeq: this.SiguienteAccionSeq
+            });
             if (this.ModoRehidratacion === false) {
                 setTimeout(function() { this.Turno(); }.bind(this), this.TiempoTurno);
             }
@@ -728,6 +786,10 @@ var Domino_Partida = function() {
             if (typeof(Accion.seq) === "number") {
                 this.SiguienteAccionSeq++;
             }
+            this.DebugLog("AplicarAccion:passApplied", {
+                seq: Accion.seq,
+                nextSeq: this.SiguienteAccionSeq
+            });
             if (this.ModoRehidratacion === false) {
                 setTimeout(function() { this.Turno(); }.bind(this), this.TiempoTurno);
             }

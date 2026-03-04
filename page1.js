@@ -34,6 +34,10 @@ const PENDING_PROMO_STORAGE_KEY = "domino_pending_promo_code";
 const CLIENT_DEVICE_STORAGE_KEY = "domino_device_id_v1";
 const verificationEmailSentByUid = new Set();
 const APP_HOME_ROUTE = "./inedex.html";
+const TERMS_ROUTE = "./conditions-utilisation.html";
+const PRIVACY_ROUTE = "./politique-confidentialite.html";
+const LEGAL_ROUTE = "./mentions-legales.html";
+let signupConsentResolver = null;
 
 function escapeAttr(text) {
   return String(text || "")
@@ -141,6 +145,126 @@ function closeEmailVerificationModal() {
   if (!overlay) return;
   overlay.classList.add("hidden");
   overlay.classList.remove("flex");
+}
+
+function resolveSignupConsent(value) {
+  if (!signupConsentResolver) return;
+  const resolver = signupConsentResolver;
+  signupConsentResolver = null;
+  resolver(Boolean(value));
+}
+
+function closeSignupConsentModal(accepted = false) {
+  const overlay = document.getElementById("signupConsentOverlay");
+  if (!overlay) {
+    resolveSignupConsent(accepted);
+    return;
+  }
+  overlay.classList.add("hidden");
+  overlay.classList.remove("flex");
+  document.body.classList.remove("overflow-hidden");
+  resolveSignupConsent(accepted);
+}
+
+function ensureSignupConsentModal() {
+  let overlay = document.getElementById("signupConsentOverlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "signupConsentOverlay";
+    overlay.className = "fixed inset-0 z-[5300] hidden items-center justify-center bg-black/65 p-4 backdrop-blur-md";
+    overlay.innerHTML = `
+      <div class="w-[min(94vw,34rem)] rounded-3xl border border-white/20 bg-[#3F4766]/88 p-5 text-white shadow-[14px_14px_34px_rgba(16,23,40,0.5),-10px_-10px_24px_rgba(112,126,165,0.2)] backdrop-blur-xl sm:p-6">
+        <h2 class="text-xl font-bold tracking-wide sm:text-2xl">Avant de continuer</h2>
+        <p class="mt-2 text-sm text-white/80">
+          Pour créer un compte, tu dois confirmer ton âge et accepter les règles d'utilisation de Dominoes Lakay.
+        </p>
+
+        <div class="mt-5 space-y-3">
+          <label class="flex items-start gap-3 rounded-2xl border border-white/15 bg-white/8 px-4 py-3">
+            <input id="signupConsentAge" type="checkbox" class="mt-1 h-4 w-4 rounded border-white/30 bg-white/10 text-[#f48f45]" />
+            <span class="text-sm text-white/90">J'ai 18 ans ou plus.</span>
+          </label>
+
+          <label class="flex items-start gap-3 rounded-2xl border border-white/15 bg-white/8 px-4 py-3">
+            <input id="signupConsentTerms" type="checkbox" class="mt-1 h-4 w-4 rounded border-white/30 bg-white/10 text-[#f48f45]" />
+            <span class="text-sm text-white/90">
+              J'accepte les <a href="${TERMS_ROUTE}" target="_blank" rel="noopener noreferrer" class="font-semibold text-[#ffd8b5] underline underline-offset-2">conditions d'utilisation</a>.
+            </span>
+          </label>
+        </div>
+
+        <div class="mt-4 rounded-2xl border border-amber-300/35 bg-amber-500/12 px-4 py-3 text-xs text-amber-100 sm:text-sm">
+          Important: en créant un compte, tu confirmes utiliser des informations exactes, respecter les règles du jeu et accepter les politiques du service.
+        </div>
+
+        <div id="signupConsentError" class="mt-3 min-h-5 text-sm text-[#ffb0b0]"></div>
+
+        <div class="mt-4 flex flex-col gap-3 sm:flex-row">
+          <button id="signupConsentCancelBtn" type="button" class="h-11 flex-1 rounded-2xl border border-white/15 bg-white/8 text-sm font-semibold text-white/85 transition hover:bg-white/12">
+            Annuler
+          </button>
+          <button id="signupConsentConfirmBtn" type="button" class="h-11 flex-1 rounded-2xl border border-[#ffb26e] bg-[#F57C00] text-sm font-semibold text-white shadow-[8px_8px_18px_rgba(163,82,27,0.45),-6px_-6px_14px_rgba(255,175,102,0.22)] transition hover:-translate-y-0.5">
+            Continuer
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+  }
+
+  const cancelBtn = document.getElementById("signupConsentCancelBtn");
+  const confirmBtn = document.getElementById("signupConsentConfirmBtn");
+
+  if (cancelBtn && !cancelBtn.dataset.bound) {
+    cancelBtn.dataset.bound = "1";
+    cancelBtn.addEventListener("click", () => {
+      closeSignupConsentModal(false);
+    });
+  }
+
+  if (confirmBtn && !confirmBtn.dataset.bound) {
+    confirmBtn.dataset.bound = "1";
+    confirmBtn.addEventListener("click", () => {
+      const ageCheckbox = document.getElementById("signupConsentAge");
+      const termsCheckbox = document.getElementById("signupConsentTerms");
+      const errorEl = document.getElementById("signupConsentError");
+      const hasAgeConsent = ageCheckbox?.checked === true;
+      const hasTermsConsent = termsCheckbox?.checked === true;
+
+      if (!hasAgeConsent || !hasTermsConsent) {
+        if (errorEl) errorEl.textContent = "Tu dois cocher les deux cases pour créer un compte.";
+        return;
+      }
+
+      if (errorEl) errorEl.textContent = "";
+      closeSignupConsentModal(true);
+    });
+  }
+
+  return overlay;
+}
+
+function requestSignupConsentForGoogle() {
+  if (signupConsentResolver) {
+    resolveSignupConsent(false);
+  }
+
+  const overlay = ensureSignupConsentModal();
+  const ageCheckbox = document.getElementById("signupConsentAge");
+  const termsCheckbox = document.getElementById("signupConsentTerms");
+  const errorEl = document.getElementById("signupConsentError");
+
+  if (ageCheckbox) ageCheckbox.checked = false;
+  if (termsCheckbox) termsCheckbox.checked = false;
+  if (errorEl) errorEl.textContent = "";
+
+  overlay.classList.remove("hidden");
+  overlay.classList.add("flex");
+  document.body.classList.add("overflow-hidden");
+
+  return new Promise((resolve) => {
+    signupConsentResolver = resolve;
+  });
 }
 
 function ensureEmailVerificationModal() {
@@ -431,6 +555,35 @@ function renderPage1() {
                   </div>
                 </div>
               ` : ""}
+              ${authMode === "signup" ? `
+                <div class="space-y-3 rounded-2xl border border-white/15 bg-white/6 px-4 py-4">
+                  <label class="flex items-start gap-3 text-sm text-white/90">
+                    <input
+                      id="signupAgeCheckbox"
+                      type="checkbox"
+                      class="mt-1 h-4 w-4 rounded border-white/30 bg-white/10 text-[#f48f45]"
+                    />
+                    <span>J'ai 18 ans ou plus.</span>
+                  </label>
+                  <label class="flex items-start gap-3 text-sm text-white/90">
+                    <input
+                      id="signupTermsCheckbox"
+                      type="checkbox"
+                      class="mt-1 h-4 w-4 rounded border-white/30 bg-white/10 text-[#f48f45]"
+                    />
+                    <span>
+                      J'accepte les
+                      <a href="${TERMS_ROUTE}" target="_blank" rel="noopener noreferrer" class="font-semibold text-[#ffd8b5] underline underline-offset-2">conditions d'utilisation</a>.
+                    </span>
+                  </label>
+                  <div class="text-[11px] text-white/65 sm:text-xs">
+                    En créant un compte, tu confirmes aussi avoir lu la
+                    <a href="${PRIVACY_ROUTE}" target="_blank" rel="noopener noreferrer" class="text-[#ffd8b5] underline underline-offset-2">politique de confidentialité</a>
+                    et les
+                    <a href="${LEGAL_ROUTE}" target="_blank" rel="noopener noreferrer" class="text-[#ffd8b5] underline underline-offset-2">mentions légales</a>.
+                  </div>
+                </div>
+              ` : ""}
             </form>
 
             <div class="mt-3 ${authMode === "signup" ? "hidden" : ""}">
@@ -466,9 +619,9 @@ function renderPage1() {
 
           <div class="mt-auto pt-8 text-[11px] leading-relaxed text-white/70 sm:text-xs">
             <div class="flex flex-wrap gap-x-4 gap-y-1">
-              <a href="${APP_HOME_ROUTE}" class="hover:text-white">Conditions d'utilisation</a>
-              <a href="${APP_HOME_ROUTE}" class="hover:text-white">Politique de confidentialité</a>
-              <a href="${APP_HOME_ROUTE}" class="hover:text-white">Mentions légales</a>
+              <a href="${TERMS_ROUTE}" target="_blank" rel="noopener noreferrer" class="hover:text-white">Conditions d'utilisation</a>
+              <a href="${PRIVACY_ROUTE}" target="_blank" rel="noopener noreferrer" class="hover:text-white">Politique de confidentialité</a>
+              <a href="${LEGAL_ROUTE}" target="_blank" rel="noopener noreferrer" class="hover:text-white">Mentions légales</a>
             </div>
           </div>
         </section>
@@ -505,6 +658,8 @@ function bindPage1Events() {
   const togglePasswordBtn = document.getElementById("togglePasswordBtn");
   const togglePasswordConfirmBtn = document.getElementById("togglePasswordConfirmBtn");
   const promoCodeInput = document.getElementById("promoCodeInput");
+  const signupAgeCheckbox = document.getElementById("signupAgeCheckbox");
+  const signupTermsCheckbox = document.getElementById("signupTermsCheckbox");
   const googleBtn = document.getElementById("googleContinueBtn");
   const forgotPasswordBtn = document.getElementById("forgotPasswordBtn");
   const forgotPasswordStatus = document.getElementById("forgotPasswordStatus");
@@ -577,6 +732,14 @@ function bindPage1Events() {
       if (errorEl) errorEl.textContent = "Le mot de passe de confirmation ne correspond pas.";
       return;
     }
+    if (authMode === "signup" && signupAgeCheckbox?.checked !== true) {
+      if (errorEl) errorEl.textContent = "Tu dois confirmer que tu as 18 ans ou plus.";
+      return;
+    }
+    if (authMode === "signup" && signupTermsCheckbox?.checked !== true) {
+      if (errorEl) errorEl.textContent = "Tu dois accepter les conditions d'utilisation pour créer un compte.";
+      return;
+    }
 
     if (errorEl) errorEl.textContent = "";
     setForgotPasswordStatus("", "neutral");
@@ -618,6 +781,10 @@ function bindPage1Events() {
       try {
         await withButtonLoading(googleBtn, async () => {
           const promoCode = authMode === "signup" ? normalizeCode(promoCodeInput?.value || "") : "";
+          if (authMode === "signup") {
+            const consentOk = await requestSignupConsentForGoogle();
+            if (!consentOk) return;
+          }
           savePendingPromoCode(promoCode);
           authFlowBusy = true;
           const res = await loginWithGoogle();

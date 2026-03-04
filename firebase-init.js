@@ -91,16 +91,54 @@ function setupAppCheckDebugToken() {
 }
 
 let appCheck = null;
+let appCheckBootstrapPromise = null;
+
+function initializeAppCheckWithKey(siteKey) {
+  const normalized = String(siteKey || "").trim();
+  if (!normalized || normalized === "REPLACE_WITH_RECAPTCHA_V3_SITE_KEY") return false;
+  if (appCheck) return true;
+
+  appCheck = initializeAppCheck(app, {
+    provider: new ReCaptchaV3Provider(normalized),
+    isTokenAutoRefreshEnabled: true,
+  });
+
+  if (typeof window !== "undefined") {
+    window.__DOMINO_APPCHECK_SITE_KEY = normalized;
+  }
+
+  return true;
+}
+
+async function bootstrapRemoteAppCheck() {
+  if (appCheck || appCheckBootstrapPromise) return appCheckBootstrapPromise;
+
+  appCheckBootstrapPromise = (async () => {
+    try {
+      const callable = httpsCallable(functions, "getPublicRuntimeConfigSecure");
+      const response = await callable({});
+      const payload = response?.data && typeof response.data === "object" ? response.data : {};
+      const remoteSiteKey = String(payload.appCheckSiteKey || "").trim();
+      if (initializeAppCheckWithKey(remoteSiteKey)) return;
+    } catch (error) {
+      if (typeof console !== "undefined") {
+        console.warn("[APP_CHECK] config distante indisponible.", error);
+      }
+    }
+
+    if (typeof console !== "undefined" && !appCheck) {
+      console.warn("[APP_CHECK] firebase-app-check-site-key manquant; App Check web inactif.");
+    }
+  })();
+
+  return appCheckBootstrapPromise;
+}
+
 try {
   setupAppCheckDebugToken();
   const siteKey = readAppCheckSiteKey();
-  if (siteKey) {
-    appCheck = initializeAppCheck(app, {
-      provider: new ReCaptchaV3Provider(siteKey),
-      isTokenAutoRefreshEnabled: true,
-    });
-  } else if (typeof console !== "undefined") {
-    console.warn("[APP_CHECK] firebase-app-check-site-key manquant; App Check web inactif.");
+  if (!initializeAppCheckWithKey(siteKey)) {
+    void bootstrapRemoteAppCheck();
   }
 } catch (error) {
   if (typeof console !== "undefined") {

@@ -87,11 +87,11 @@ let roomUnsub = null;
 let actionsUnsub = null;
 let roomId = null;
 let seatIndex = -1;
+let botTurnNudgeKey = "";
 let startTimer = null;
 let turnTimer = null;
 let turnTimerKey = "";
 let turnTick = null;
-let botTurnTimer = null;
 let gameLaunched = false;
 let matchmakingBusy = false;
 let resumePromise = null;
@@ -243,6 +243,20 @@ function logFirestoreError(context, err) {
     setStatus(`Erreur Firestore (${code}). Ouvre la console: lien d'index détecté.`);
   } else {
     setStatus(`Erreur Firestore (${code}). Voir console.`);
+  }
+}
+
+function debugMatch(stage, details = {}) {
+  try {
+    const payload = {
+      ts: new Date().toISOString(),
+      roomId,
+      seatIndex,
+      ...details,
+    };
+    console.log(`[MATCH_DEBUG] ${stage} ${JSON.stringify(payload)}`, payload);
+  } catch (_) {
+    // Ignore logging failures
   }
 }
 
@@ -575,10 +589,6 @@ function clearTurnTimer() {
     clearTimeout(turnTimer);
     turnTimer = null;
   }
-  if (botTurnTimer) {
-    clearTimeout(botTurnTimer);
-    botTurnTimer = null;
-  }
   if (turnTick) {
     clearInterval(turnTick);
     turnTick = null;
@@ -594,21 +604,22 @@ function clearTurnTimer() {
 function setTurnTimerUI(remainingSec, currentPlayer) {
   const S = window.GameSession || null;
   const localSeat = (S && typeof S.seatIndex === "number") ? S.seatIndex : -1;
-  const isLocalTurn = (typeof currentPlayer === "number" && localSeat === currentPlayer);
-
-  const legacy = document.getElementById("TurnTimer");
-  if (legacy) {
-    const safeLegacy = Math.max(0, Math.ceil(remainingSec));
-    legacy.textContent = String(safeLegacy);
-    legacy.setAttribute("Urgent", safeLegacy <= 5 ? "true" : "false");
+  let isLocalTurn = (typeof currentPlayer === "number" && localSeat === currentPlayer);
+  const partida = window.Domino && window.Domino.Partida ? window.Domino.Partida : null;
+  if (partida && partida.ModoRehidratacion !== true && typeof partida.EsTurnoHumanoLocal === "function") {
+    isLocalTurn = partida.EsTurnoHumanoLocal() === true;
   }
 
+  const legacy = document.getElementById("TurnTimer");
   const labelEl = document.getElementById("LocalTurnLabel");
   const valueEl = document.getElementById("LocalTurnValue");
   const barEl = document.getElementById("LocalTurnBar");
-  if (!labelEl || !valueEl || !barEl) return;
-
   if (!isLocalTurn) {
+    if (legacy) {
+      legacy.textContent = "--";
+      legacy.setAttribute("Urgent", "false");
+    }
+    if (!labelEl || !valueEl || !barEl) return;
     labelEl.textContent = "En attente";
     valueEl.textContent = "--";
     barEl.style.width = "100%";
@@ -617,6 +628,11 @@ function setTurnTimerUI(remainingSec, currentPlayer) {
   }
 
   const safe = Math.max(0, Math.ceil(remainingSec));
+  if (legacy) {
+    legacy.textContent = String(safe);
+    legacy.setAttribute("Urgent", safe <= 5 ? "true" : "false");
+  }
+  if (!labelEl || !valueEl || !barEl) return;
   const pct = Math.max(0, Math.min(100, Math.floor((safe / (TURN_LIMIT_MS / 1000)) * 100)));
   labelEl.textContent = "Ton tour";
   valueEl.textContent = String(safe);
@@ -723,10 +739,42 @@ function resetSessionState() {
   setMatchLoading(false);
   roomId = null;
   seatIndex = -1;
+  botTurnNudgeKey = "";
   matchmakingBusy = false;
   window.GameSession = null;
   setLeaveRoomButtonVisible(false);
   updateOrientationGuard();
+}
+
+function maybeNudgeServerForBotTurn(id, roomData) {
+  if (!id || !roomData || String(roomData.status || "") !== "playing") return;
+  const currentPlayer = Number(roomData.currentPlayer);
+  const turnActual = Number(roomData.turnActual);
+  if (!Number.isFinite(currentPlayer) || !Number.isFinite(turnActual)) return;
+
+  const humanSeats = Array.isArray(window.GameSession?.humanSeats) ? window.GameSession.humanSeats : [];
+  if (humanSeats.indexOf(currentPlayer) !== -1) {
+    botTurnNudgeKey = "";
+    return;
+  }
+
+  const key = `${id}:${Math.trunc(turnActual)}:${Math.trunc(currentPlayer)}`;
+  if (botTurnNudgeKey === key) return;
+  botTurnNudgeKey = key;
+
+  debugMatch("botTurn:nudge", {
+    currentPlayer: Math.trunc(currentPlayer),
+    turnActual: Math.trunc(turnActual),
+  });
+
+  startRoomIfNeeded(id).catch((err) => {
+    debugMatch("botTurn:nudgeError", {
+      currentPlayer: Math.trunc(currentPlayer),
+      turnActual: Math.trunc(turnActual),
+      code: err?.code || "unknown",
+      message: err?.message || String(err),
+    });
+  });
 }
 
 function parseSeatsMap(seats) {
@@ -833,9 +881,16 @@ async function findActiveRoomForUser(uid) {
 }
 
 async function startRoomIfNeeded(id) {
+  debugMatch("startRoomIfNeeded:begin", { targetRoomId: id });
   try {
     await ensureRoomReadySecure({ roomId: id });
+    debugMatch("startRoomIfNeeded:success", { targetRoomId: id });
   } catch (err) {
+    debugMatch("startRoomIfNeeded:error", {
+      targetRoomId: id,
+      code: err?.code || "unknown",
+      message: err?.message || String(err),
+    });
     logFirestoreError("startRoomIfNeeded", err);
     throw err;
   }
@@ -906,16 +961,50 @@ async function onGameEnded(winnerSeat) {
 
 async function pushAction(action) {
   if (!roomId) throw new Error("Aucune salle active.");
+  debugMatch("pushAction:send", {
+    actionType: action?.type || "",
+    actionPlayer: action?.player,
+    actionBranch: action?.branch || action?.side || "",
+    actionTilePos: action?.tilePos,
+    sessionTurnActual: window.GameSession?.turnActual,
+    sessionCurrentPlayer: window.GameSession?.currentPlayer,
+  });
   try {
     await submitActionSecure({
       roomId,
       clientActionId: makeClientActionId(),
       action,
     });
+    debugMatch("pushAction:success", {
+      actionType: action?.type || "",
+    });
   } catch (err) {
+    debugMatch("pushAction:error", {
+      actionType: action?.type || "",
+      code: err?.code || "unknown",
+      message: err?.message || String(err),
+    });
     console.error("[MATCH] submitAction error", err);
     throw err;
   }
+}
+
+function syncGameSessionFromRoom(roomData) {
+  if (!window.GameSession || !roomData) return;
+  window.GameSession.status = roomData.status;
+  window.GameSession.currentPlayer = typeof roomData.currentPlayer === "number" ? roomData.currentPlayer : window.GameSession.currentPlayer;
+  window.GameSession.turnActual = typeof roomData.turnActual === "number" ? roomData.turnActual : window.GameSession.turnActual;
+  window.GameSession.lastActionSeq = typeof roomData.lastActionSeq === "number" ? roomData.lastActionSeq : window.GameSession.lastActionSeq;
+  window.GameSession.entryCostDoes = getCurrentRoomEntryCostDoes(roomData);
+  window.GameSession.rewardAmountDoes = getCurrentRoomRewardDoes(roomData);
+  debugMatch("syncGameSessionFromRoom", {
+    status: roomData.status || "",
+    currentPlayer: roomData.currentPlayer,
+    turnActual: roomData.turnActual,
+    lastActionSeq: roomData.lastActionSeq,
+    humanCount: roomData.humanCount,
+    botCount: roomData.botCount,
+  });
 }
 
 function scheduleTurnTimeout(id, roomData) {
@@ -939,6 +1028,67 @@ function scheduleTurnTimeout(id, roomData) {
   turnTimer = setTimeout(async () => {
     if (turnTimerKey !== key) return;
     setTurnTimerUI(0, roomData.currentPlayer);
+
+    const session = window.GameSession || null;
+    const localSeat = (session && typeof session.seatIndex === "number") ? session.seatIndex : -1;
+    const isStillLocalTurn =
+      !!session &&
+      session.roomId === id &&
+      session.status === "playing" &&
+      typeof session.turnActual === "number" &&
+      typeof session.currentPlayer === "number" &&
+      session.turnActual === roomData.turnActual &&
+      session.currentPlayer === roomData.currentPlayer &&
+      localSeat === roomData.currentPlayer;
+
+    if (!isStillLocalTurn) {
+      debugMatch("turnTimer:skipAutoPlay", {
+        reason: "not-local-turn-anymore",
+        currentPlayer: roomData.currentPlayer,
+        turnActual: roomData.turnActual,
+        sessionCurrentPlayer: session?.currentPlayer,
+        sessionTurnActual: session?.turnActual,
+      });
+      return;
+    }
+
+    const partida = window.Domino && window.Domino.Partida ? window.Domino.Partida : null;
+    if (!partida || typeof partida.JugarAutomaticoSeat !== "function") {
+      debugMatch("turnTimer:skipAutoPlay", {
+        reason: "missing-partida",
+        currentPlayer: roomData.currentPlayer,
+        turnActual: roomData.turnActual,
+      });
+      return;
+    }
+
+    if (typeof partida.EsTurnoHumanoLocal === "function" && partida.EsTurnoHumanoLocal() !== true) {
+      debugMatch("turnTimer:skipAutoPlay", {
+        reason: "partida-not-local-turn-anymore",
+        currentPlayer: roomData.currentPlayer,
+        turnActual: roomData.turnActual,
+      });
+      return;
+    }
+
+    let autoPlayed = false;
+    try {
+      autoPlayed = partida.JugarAutomaticoSeat(localSeat, true) === true;
+    } catch (err) {
+      debugMatch("turnTimer:autoPlayError", {
+        currentPlayer: roomData.currentPlayer,
+        turnActual: roomData.turnActual,
+        message: err && err.message ? err.message : String(err || ""),
+      });
+      return;
+    }
+
+    debugMatch("turnTimer:autoPlay", {
+      currentPlayer: roomData.currentPlayer,
+      turnActual: roomData.turnActual,
+      localSeat,
+      autoPlayed,
+    });
   }, remainingMs);
 }
 
@@ -956,9 +1106,34 @@ function watchActions(id) {
     const expectedTurn = Number.isFinite(Number(session?.turnActual)) ? Math.trunc(Number(session.turnActual)) : 0;
     const expectedPlayer = Number.isFinite(Number(session?.currentPlayer)) ? Math.trunc(Number(session.currentPlayer)) : -1;
 
-    if (partida.TurnoActual !== expectedTurn) return;
-    if (expectedPlayer >= 0 && partida.JugadorActual !== expectedPlayer) return;
+    // Les listeners room/actions peuvent arriver dans un ordre différent.
+    // Si le journal d'actions est déjà "en avance" sur le snapshot room,
+    // il ne faut pas rester figé en réhydratation.
+    if (partida.TurnoActual < expectedTurn) {
+      debugMatch("rehydration:wait-turn", {
+        localTurn: partida.TurnoActual,
+        expectedTurn,
+        localPlayer: partida.JugadorActual,
+        expectedPlayer,
+      });
+      return;
+    }
+    if (partida.TurnoActual === expectedTurn && expectedPlayer >= 0 && partida.JugadorActual !== expectedPlayer) {
+      debugMatch("rehydration:wait-player", {
+        localTurn: partida.TurnoActual,
+        expectedTurn,
+        localPlayer: partida.JugadorActual,
+        expectedPlayer,
+      });
+      return;
+    }
 
+    debugMatch("rehydration:finish", {
+      localTurn: partida.TurnoActual,
+      expectedTurn,
+      localPlayer: partida.JugadorActual,
+      expectedPlayer,
+    });
     partida.FinalizarRehidratacion();
   }
 
@@ -972,6 +1147,10 @@ function watchActions(id) {
         typeof window.Domino.Partida.AplicarAccionMultijugador === "function"
       ) {
         firstSnapshot = false;
+        debugMatch("watchActions:firstSnapshot", {
+          docs: snap.size,
+          empty: snap.empty,
+        });
 
         if (typeof window.Domino.Partida.IniciarRehidratacion === "function") {
           window.Domino.Partida.IniciarRehidratacion();
@@ -988,6 +1167,12 @@ function watchActions(id) {
           snap.docs.forEach((d) => {
             const action = d.data();
             if (typeof action.seq !== "number") return;
+            debugMatch("watchActions:replay", {
+              seq: action.seq,
+              type: action.type,
+              player: action.player,
+              branch: action.branch || "",
+            });
             saveActionToCache(id, action);
             window.Domino.Partida.AplicarAccionMultijugador(action);
           });
@@ -1002,6 +1187,12 @@ function watchActions(id) {
         if (change.type !== "added") return;
         const action = change.doc.data();
         if (typeof action.seq !== "number") return;
+        debugMatch("watchActions:added", {
+          seq: action.seq,
+          type: action.type,
+          player: action.player,
+          branch: action.branch || "",
+        });
         saveActionToCache(id, action);
 
         if (window.Domino && window.Domino.Partida && typeof window.Domino.Partida.AplicarAccionMultijugador === "function") {
@@ -1046,6 +1237,15 @@ function launchLocalGame(roomData) {
   setStatus(
     `Salle ${roomId} | Mise ${window.GameSession.entryCostDoes} Does | Gain ${window.GameSession.rewardAmountDoes} Does | Seat ${seatIndex + 1} | Humains ${window.GameSession.humans} | Bots ${window.GameSession.bots}`
   );
+  debugMatch("launchLocalGame", {
+    status: roomData.status || "",
+    hostSeat,
+    humanSeats,
+    currentPlayer: window.GameSession.currentPlayer,
+    turnActual: window.GameSession.turnActual,
+    lastActionSeq: window.GameSession.lastActionSeq,
+    deckOrderLength: window.GameSession.deckOrder.length,
+  });
 
   if (window.Domino && window.Domino.Partida) {
     // Empêche toute action locale prématurée pendant la reconstruction d'état.
@@ -1079,6 +1279,15 @@ function watchRoom(id) {
         return;
       }
       const data = snap.data();
+      debugMatch("watchRoom:snapshot", {
+        status: data.status || "",
+        currentPlayer: data.currentPlayer,
+        turnActual: data.turnActual,
+        lastActionSeq: data.lastActionSeq,
+        humanCount: data.humanCount,
+        botCount: data.botCount,
+        deckOrderLength: Array.isArray(data.deckOrder) ? data.deckOrder.length : 0,
+      });
 
       if (data.status === "waiting") {
         clearTurnTimer();
@@ -1103,7 +1312,9 @@ function watchRoom(id) {
       if (data.status === "playing") {
         clearTimer();
         setMatchLoading(false);
+        syncGameSessionFromRoom(data);
         launchLocalGame(data);
+        maybeNudgeServerForBotTurn(id, data);
         updateOrientationGuard();
         scheduleTurnTimeout(id, data);
         matchmakingBusy = false;

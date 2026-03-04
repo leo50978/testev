@@ -17,6 +17,8 @@ const GAME_STATES_COLLECTION = "gameStates";
 const CLIENTS_COLLECTION = "clients";
 const AMBASSADORS_COLLECTION = "ambassadors";
 const AMBASSADOR_EVENTS_COLLECTION = "ambassadorGameEvents";
+const AMBASSADOR_PRIVATE_SUBCOLLECTION = "private";
+const AMBASSADOR_SECRETS_DOC = "credentials";
 const CHAT_COLLECTION = "globalChannelMessages";
 const SUPPORT_THREADS_COLLECTION = "supportThreads";
 const SUPPORT_MESSAGES_SUBCOLLECTION = "messages";
@@ -138,6 +140,30 @@ function sanitizePublicAsset(value, maxLength = 400) {
   const out = sanitizeText(value, maxLength);
   if (!out) return "";
   if (/^(https:\/\/|\.\/|\/)/i.test(out)) return out;
+  return "";
+}
+
+function sanitizePaymentMethodAsset(value, maxLength = 180) {
+  const out = sanitizeText(value, maxLength);
+  if (!out) return "";
+
+  const baseValue = out.replace(/\\/g, "/").split(/[?#]/)[0];
+  const fileName = baseValue.split("/").pop() || "";
+  if (!/^[a-zA-Z0-9._-]+\.(png|jpe?g|gif|webp|svg)$/i.test(fileName)) {
+    return "";
+  }
+  return fileName;
+}
+
+function sanitizeStorageAssetUrl(value, maxLength = 2000) {
+  const out = sanitizePublicAsset(value, maxLength);
+  if (!out) return "";
+  if (
+    /^https:\/\/firebasestorage\.googleapis\.com\//i.test(out)
+    || /^https:\/\/storage\.googleapis\.com\//i.test(out)
+  ) {
+    return out;
+  }
   return "";
 }
 
@@ -300,6 +326,26 @@ function verifyAuthCode(authCode, hashHex, saltHex, algo = AUTH_HASH_ALGO) {
   } catch (_) {
     return false;
   }
+}
+
+function ambassadorSecretsRef(ambassadorRef) {
+  return ambassadorRef.collection(AMBASSADOR_PRIVATE_SUBCOLLECTION).doc(AMBASSADOR_SECRETS_DOC);
+}
+
+async function readAmbassadorSecrets(ambassadorDoc) {
+  const publicData = ambassadorDoc?.data() || {};
+  const secretsSnap = await ambassadorSecretsRef(ambassadorDoc.ref).get();
+  const secretData = secretsSnap.exists ? (secretsSnap.data() || {}) : {};
+  return {
+    hasPrivate: secretsSnap.exists,
+    hashHex: String(secretData.authCodeHash || publicData.authCodeHash || ""),
+    saltHex: String(secretData.authCodeSalt || publicData.authCodeSalt || ""),
+    algo: String(secretData.authCodeAlgo || publicData.authCodeAlgo || AUTH_HASH_ALGO),
+    legacyPlain: String(publicData.authCode || "").trim(),
+    hasPublicSecrets:
+      !!String(publicData.authCode || "").trim()
+      || (!!String(publicData.authCodeHash || "").trim() && !!String(publicData.authCodeSalt || "").trim()),
+  };
 }
 
 async function ambassadorCodeExists(code) {
@@ -770,6 +816,7 @@ function normalizePublicAppSettings(rawData = {}) {
     verificationHours: Math.max(1, Math.min(72, safeInt(rawData.verificationHours || DEFAULT_PUBLIC_SETTINGS.verificationHours))),
     expiredMessage: sanitizeText(rawData.expiredMessage || DEFAULT_PUBLIC_SETTINGS.expiredMessage, MAX_PUBLIC_TEXT_LENGTH),
     gameStakeOptions: normalizeGameStakeOptions(rawData.gameStakeOptions),
+    appCheckSiteKey: sanitizeText(rawData.appCheckSiteKey || "", 256),
   };
 }
 
@@ -1121,8 +1168,8 @@ function sanitizePublicMethod(docSnap) {
     id: docSnap.id,
     name: sanitizeText(data.name || "Methode", 80),
     instructions: sanitizeText(data.instructions || "", MAX_PUBLIC_TEXT_LENGTH),
-    image: sanitizePublicAsset(data.image || ""),
-    qrCode: sanitizePublicAsset(data.qrCode || ""),
+    image: sanitizePaymentMethodAsset(data.image || ""),
+    qrCode: sanitizePaymentMethodAsset(data.qrCode || ""),
     accountName: sanitizeText(data.accountName || "", 120),
     phoneNumber: sanitizePhone(data.phoneNumber || ""),
     isActive: true,
@@ -1134,9 +1181,6 @@ function resolveRequestedMove(state, seat, rawAction = {}) {
   const type = String(rawAction?.type || "").trim();
   if (type !== "play" && type !== "pass") {
     throw new HttpsError("invalid-argument", "Type d'action invalide.");
-  }
-  if (Number.isFinite(Number(rawAction?.player)) && Math.trunc(Number(rawAction.player)) !== seat) {
-    throw new HttpsError("permission-denied", "Seat joueur invalide.");
   }
 
   if (type === "pass") {
@@ -1360,8 +1404,18 @@ function countImmediateWinThreat(state, seat) {
   return 0;
 }
 
+function sleepMs(delayMs = 0) {
+  const wait = Math.max(0, safeInt(delayMs));
+  if (!wait) return Promise.resolve();
+  return new Promise((resolve) => {
+    setTimeout(resolve, wait);
+  });
+}
+
 function scoreStateForSeat(room, state, perspectiveSeat) {
-  const winnerSeat = safeSignedInt(state?.winnerSeat);
+  const winnerSeat = Number.isFinite(Number(state?.winnerSeat))
+    ? Math.trunc(Number(state.winnerSeat))
+    : -1;
   const perspectiveIsHuman = isSeatHuman(room, perspectiveSeat);
   const otherSeats = getOtherSeats(perspectiveSeat);
   const humanOpponents = otherSeats.filter((seat) => isSeatHuman(room, seat));
@@ -1532,6 +1586,7 @@ function buildOpeningMoveForState(state) {
 function advanceBotsAndCollect(room, state, roomId, firstMove = null, actorUid = "") {
   let liveState = normalizeGameState(state, room);
   const records = [];
+  let autoBotMoves = 0;
 
   if (firstMove) {
     const result = applyResolvedMove(liveState, room, firstMove, actorUid);
@@ -1542,15 +1597,20 @@ function advanceBotsAndCollect(room, state, roomId, firstMove = null, actorUid =
     });
   }
 
-  while (liveState.winnerSeat < 0 && !isSeatHuman(room, liveState.currentPlayer)) {
-    const botSeat = liveState.currentPlayer;
+  while (liveState.winnerSeat < 0 && autoBotMoves < 12) {
+    const botSeat = safeSignedInt(liveState.currentPlayer);
+    if (botSeat < 0 || botSeat > 3 || isSeatHuman(room, botSeat)) {
+      break;
+    }
+
     const botMove = chooseBotMove(room, liveState, botSeat);
-    const botResult = applyResolvedMove(liveState, room, botMove, "server:bot");
-    liveState = botResult.state;
+    const result = applyResolvedMove(liveState, room, botMove, "server:bot");
+    liveState = result.state;
     records.push({
-      ...botResult.record,
+      ...result.record,
       roomId,
     });
+    autoBotMoves += 1;
   }
 
   return {
@@ -1583,6 +1643,7 @@ function buildRoomUpdateFromGameState(room, nextState, records = []) {
     turnStartedAt: admin.firestore.FieldValue.serverTimestamp(),
     playedCount: safeInt(room.playedCount) + playedCountDelta,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    turnLockedUntilMs: 0,
   };
 
   if (lastRecord) {
@@ -1610,6 +1671,96 @@ function buildRoomUpdateFromGameState(room, nextState, records = []) {
   }
 
   return update;
+}
+
+async function processPendingBotTurns(roomId) {
+  const safeRoomId = String(roomId || "").trim();
+  if (!safeRoomId) return;
+
+  const roomRef = db.collection(ROOMS_COLLECTION).doc(safeRoomId);
+  const stateRef = gameStateRef(safeRoomId);
+
+  while (true) {
+    const roomSnap = await roomRef.get();
+    if (!roomSnap.exists) return;
+    const room = roomSnap.data() || {};
+
+    if (String(room.status || "") !== "playing") return;
+    const roomWinnerSeat = Number.isFinite(Number(room.winnerSeat))
+      ? Math.trunc(Number(room.winnerSeat))
+      : -1;
+    if (roomWinnerSeat >= 0) return;
+
+    const botSeat = safeSignedInt(room.currentPlayer);
+    if (botSeat < 0 || botSeat > 3 || isSeatHuman(room, botSeat)) {
+      return;
+    }
+
+    const outcome = await db.runTransaction(async (tx) => {
+      const [liveRoomSnap, stateSnap] = await Promise.all([
+        tx.get(roomRef),
+        tx.get(stateRef),
+      ]);
+
+      if (!liveRoomSnap.exists) {
+        return { processed: false, stop: true };
+      }
+
+      const liveRoom = liveRoomSnap.data() || {};
+      if (String(liveRoom.status || "") !== "playing") {
+        return { processed: false, stop: true };
+      }
+      const liveWinnerSeat = Number.isFinite(Number(liveRoom.winnerSeat))
+        ? Math.trunc(Number(liveRoom.winnerSeat))
+        : -1;
+      if (liveWinnerSeat >= 0) {
+        return { processed: false, stop: true };
+      }
+
+      const liveBotSeat = safeSignedInt(liveRoom.currentPlayer);
+      if (liveBotSeat < 0 || liveBotSeat > 3 || isSeatHuman(liveRoom, liveBotSeat)) {
+        return { processed: false, stop: true };
+      }
+
+      const currentState = stateSnap.exists
+        ? normalizeGameState(
+            stateSnap.data(),
+            liveRoom
+          )
+        : createInitialGameState(
+            liveRoom,
+            Array.isArray(liveRoom.deckOrder) && liveRoom.deckOrder.length === 28 ? liveRoom.deckOrder : makeDeckOrder()
+          );
+
+      if (currentState.winnerSeat >= 0) {
+        return { processed: false, stop: true };
+      }
+
+      const botMove = chooseBotMove(liveRoom, currentState, liveBotSeat);
+      const batchResult = applyActionBatchInTransaction(
+        tx,
+        roomRef,
+        liveRoom,
+        currentState,
+        safeRoomId,
+        botMove,
+        "server:bot"
+      );
+      const nextState = batchResult.state;
+      tx.set(stateRef, buildGameStateWrite(nextState), { merge: true });
+      tx.update(roomRef, buildRoomUpdateFromGameState(liveRoom, nextState, batchResult.records));
+
+      return {
+        processed: true,
+        stop: nextState.winnerSeat >= 0 || isSeatHuman(liveRoom, nextState.currentPlayer),
+      };
+    });
+
+    if (!outcome) return;
+    if (!outcome.processed || outcome.stop) {
+      return;
+    }
+  }
 }
 
 function buildGameStateWrite(nextState) {
@@ -2034,6 +2185,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
           entryCostDoes: stakeDoes,
           rewardAmountDoes,
           stakeConfigId: selectedStakeConfig.id,
+          turnLockedUntilMs: 0,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
 
@@ -2092,6 +2244,9 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
         };
       });
 
+      if (joined?.status === "playing") {
+        await processPendingBotTurns(String(joined.roomId || ""));
+      }
       return joined;
     } catch (err) {
       if (err instanceof HttpsError && err.code === "failed-precondition") {
@@ -2129,6 +2284,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
       startedAt: null,
       startedAtMs: 0,
       endedAtMs: 0,
+      turnLockedUntilMs: 0,
       nextActionSeq: 0,
       deckOrder: [],
       gameMode: "domino-ffa",
@@ -2164,7 +2320,7 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
   }
 
   const roomRef = db.collection(ROOMS_COLLECTION).doc(roomId);
-  return db.runTransaction(async (tx) => {
+  const startResult = await db.runTransaction(async (tx) => {
     const roomSnap = await tx.get(roomRef);
     if (!roomSnap.exists) {
       throw new HttpsError("not-found", "Salle introuvable.");
@@ -2217,6 +2373,7 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
       startedAt: admin.firestore.FieldValue.serverTimestamp(),
       startedAtMs: Date.now(),
       deckOrder,
+      turnLockedUntilMs: 0,
       endClicks: {},
       playerEmails: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2239,6 +2396,12 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
       status: String(updates.status || "playing"),
     };
   });
+
+  if (startResult?.status === "playing") {
+    await processPendingBotTurns(roomId);
+  }
+
+  return startResult;
 });
 
 exports.leaveRoom = publicOnCall("leaveRoom", async (request) => {
@@ -2551,16 +2714,11 @@ exports.submitAction = publicOnCall("submitAction", async (request) => {
     if (room.status !== "playing") {
       throw new HttpsError("failed-precondition", "La partie n'est pas en cours.");
     }
-
     const localSeat = getSeatForUser(room, uid);
     if (localSeat < 0) {
       throw new HttpsError("permission-denied", "Tu ne fais pas partie de cette salle.");
     }
 
-    const actionPlayer = safeInt(action.player);
-    if (actionPlayer !== localSeat) {
-      throw new HttpsError("permission-denied", "Seat joueur invalide.");
-    }
     if (typeof room.currentPlayer === "number" && room.currentPlayer !== localSeat) {
       throw new HttpsError("failed-precondition", `Hors tour. Joueur attendu: ${room.currentPlayer + 1}`);
     }
@@ -2608,6 +2766,10 @@ exports.submitAction = publicOnCall("submitAction", async (request) => {
       endedReason: nextState.endedReason,
     };
   });
+
+  if (result?.status === "playing" && typeof result.nextPlayer === "number") {
+    await processPendingBotTurns(roomId);
+  }
 
   return result;
 });
@@ -2886,7 +3048,7 @@ function sanitizeSupportMediaPayload(raw = {}) {
     };
   }
 
-  const mediaUrl = sanitizePublicAsset(raw?.mediaUrl || "", 2000);
+  const mediaUrl = sanitizeStorageAssetUrl(raw?.mediaUrl || "", 2000);
   const mediaPath = sanitizeText(raw?.mediaPath || "", 600);
   if (!mediaUrl || !mediaPath.startsWith("chat-media/")) {
     return {
@@ -2903,6 +3065,13 @@ function sanitizeSupportMediaPayload(raw = {}) {
     mediaPath,
     fileName: sanitizeText(raw?.fileName || "", 120),
   };
+}
+
+function supportMediaMatchesThread(mediaPath = "", threadId = "") {
+  const safePath = String(mediaPath || "").trim();
+  const safeThreadId = String(threadId || "").trim();
+  if (!safePath || !safeThreadId) return false;
+  return safePath.startsWith(`chat-media/support/${safeThreadId}/`);
 }
 
 function buildSupportMessageRecord(actor = {}, text = "", media = null, extras = {}) {
@@ -3258,6 +3427,33 @@ exports.getPublicGameStakeOptionsSecure = publicOnCall("getPublicGameStakeOption
       enabled: item.enabled === true,
       sortOrder: item.sortOrder,
     })),
+  };
+});
+
+exports.getPublicRuntimeConfigSecure = onCall(async () => {
+  const settings = await getSettingsSnapshotData();
+  return {
+    appCheckSiteKey: String(settings.appCheckSiteKey || ""),
+    appCheckConfigured: !!String(settings.appCheckSiteKey || "").trim(),
+  };
+});
+
+exports.getDpaymentBootstrapConfig = onCall(async () => {
+  const snap = await adminBootstrapRef().get();
+  if (!snap.exists) {
+    return {
+      ok: true,
+      bootstrapped: false,
+      email: "",
+    };
+  }
+
+  const data = snap.data() || {};
+  const email = String(data.email || "").trim().toLowerCase();
+  return {
+    ok: true,
+    bootstrapped: email === FINANCE_ADMIN_EMAIL,
+    email: email === FINANCE_ADMIN_EMAIL ? email : "",
   };
 });
 
@@ -3645,6 +3841,9 @@ exports.createSupportMessageSecure = publicOnCall("createSupportMessageSecure", 
   const context = await resolveSupportThreadContext(request, payload, { allowCreate: true });
   const text = sanitizeText(payload.text || "", MAX_PUBLIC_TEXT_LENGTH);
   const media = sanitizeSupportMediaPayload(payload.media || {});
+  if (media.mediaPath && !supportMediaMatchesThread(media.mediaPath, context.threadId)) {
+    throw new HttpsError("invalid-argument", "Le média ne correspond pas à ce fil.");
+  }
   if (!text && !media.mediaUrl) {
     throw new HttpsError("invalid-argument", "Le message est vide.");
   }
@@ -3775,13 +3974,11 @@ exports.createAmbassadorSecure = onCall(async (request) => {
 
   const hashed = hashAuthCode(authCode);
   const ref = db.collection(AMBASSADORS_COLLECTION).doc();
-  await ref.set({
+  const batch = db.batch();
+  batch.set(ref, {
     name,
     promoCode,
     linkCode,
-    authCodeHash: hashed.hashHex,
-    authCodeSalt: hashed.saltHex,
-    authCodeAlgo: hashed.algo,
     doesBalance: 0,
     totalSignups: 0,
     totalSignupsViaLink: 0,
@@ -3795,6 +3992,13 @@ exports.createAmbassadorSecure = onCall(async (request) => {
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
+  batch.set(ambassadorSecretsRef(ref), {
+    authCodeHash: hashed.hashHex,
+    authCodeSalt: hashed.saltHex,
+    authCodeAlgo: hashed.algo,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  await batch.commit();
 
   return {
     ok: true,
@@ -3834,31 +4038,38 @@ exports.ambassadorLoginSecure = onCall(async (request) => {
   }
 
   const candidate = candidateDoc.data() || {};
-  const hashHex = String(candidate.authCodeHash || "");
-  const saltHex = String(candidate.authCodeSalt || "");
-  const algo = String(candidate.authCodeAlgo || AUTH_HASH_ALGO);
-  const legacyPlain = String(candidate.authCode || "");
+  const secrets = await readAmbassadorSecrets(candidateDoc);
+  const hashHex = secrets.hashHex;
+  const saltHex = secrets.saltHex;
+  const algo = secrets.algo;
+  const legacyPlain = secrets.legacyPlain;
 
   let valid = false;
   if (hashHex && saltHex) {
     valid = verifyAuthCode(authCode, hashHex, saltHex, algo);
   } else if (legacyPlain) {
     valid = safeCompareText(legacyPlain.trim(), authCode);
-    if (valid) {
-      const migrated = hashAuthCode(authCode);
-      await candidateDoc.ref.set({
-        authCodeHash: migrated.hashHex,
-        authCodeSalt: migrated.saltHex,
-        authCodeAlgo: migrated.algo,
-        authCode: admin.firestore.FieldValue.delete(),
-        authCodeMigratedAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-    }
   }
 
   if (!valid) {
     return { ok: false, reason: "invalid" };
+  }
+
+  if (!secrets.hasPrivate || secrets.hasPublicSecrets) {
+    await ambassadorSecretsRef(candidateDoc.ref).set({
+      authCodeHash: hashHex,
+      authCodeSalt: saltHex,
+      authCodeAlgo: algo,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    await candidateDoc.ref.set({
+      authCode: admin.firestore.FieldValue.delete(),
+      authCodeHash: admin.firestore.FieldValue.delete(),
+      authCodeSalt: admin.firestore.FieldValue.delete(),
+      authCodeAlgo: admin.firestore.FieldValue.delete(),
+      authCodeMigratedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
   }
 
   return {
@@ -3880,43 +4091,65 @@ exports.ambassadorLoginSecure = onCall(async (request) => {
 });
 
 exports.migrateAmbassadorSecrets = onCall(async (request) => {
-  assertAuth(request);
+  assertFinanceAdmin(request);
   const snap = await db.collection(AMBASSADORS_COLLECTION).get();
 
   let migrated = 0;
   let skipped = 0;
-  let pending = 0;
+  let pendingOps = 0;
   let batch = db.batch();
 
   for (const item of snap.docs) {
-    const data = item.data() || {};
-    const hasHash = String(data.authCodeHash || "").trim() && String(data.authCodeSalt || "").trim();
-    const legacyPlain = String(data.authCode || "").trim();
-    if (hasHash || !legacyPlain) {
+    const secrets = await readAmbassadorSecrets(item);
+    let nextHash = "";
+    let nextSalt = "";
+    let nextAlgo = AUTH_HASH_ALGO;
+
+    if (secrets.hasPrivate && secrets.hashHex && secrets.saltHex) {
+      nextHash = secrets.hashHex;
+      nextSalt = secrets.saltHex;
+      nextAlgo = secrets.algo;
+    } else if (secrets.hashHex && secrets.saltHex) {
+      nextHash = secrets.hashHex;
+      nextSalt = secrets.saltHex;
+      nextAlgo = secrets.algo;
+    } else if (secrets.legacyPlain) {
+      const next = hashAuthCode(secrets.legacyPlain);
+      nextHash = next.hashHex;
+      nextSalt = next.saltHex;
+      nextAlgo = next.algo;
+    }
+
+    if (!nextHash || !nextSalt) {
       skipped += 1;
       continue;
     }
 
-    const next = hashAuthCode(legacyPlain);
+    batch.set(ambassadorSecretsRef(item.ref), {
+      authCodeHash: nextHash,
+      authCodeSalt: nextSalt,
+      authCodeAlgo: nextAlgo,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
     batch.set(item.ref, {
-      authCodeHash: next.hashHex,
-      authCodeSalt: next.saltHex,
-      authCodeAlgo: next.algo,
       authCode: admin.firestore.FieldValue.delete(),
+      authCodeHash: admin.firestore.FieldValue.delete(),
+      authCodeSalt: admin.firestore.FieldValue.delete(),
+      authCodeAlgo: admin.firestore.FieldValue.delete(),
       authCodeMigratedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
-    pending += 1;
+    pendingOps += 2;
     migrated += 1;
 
-    if (pending >= 400) {
+    if (pendingOps >= 350) {
       await batch.commit();
       batch = db.batch();
-      pending = 0;
+      pendingOps = 0;
     }
   }
 
-  if (pending > 0) {
+  if (pendingOps > 0) {
     await batch.commit();
   }
 
