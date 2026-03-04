@@ -14,6 +14,9 @@ import {
   applyActionCode,
 } from "./firebase-init.js";
 
+const GOOGLE_REDIRECT_PENDING_KEY = "domino_google_redirect_pending_v1";
+const GOOGLE_REDIRECT_PENDING_TTL_MS = 15 * 60 * 1000;
+
 function formatAuthError(err, fallback) {
   const code = err && err.code ? String(err.code) : "";
   const map = {
@@ -98,35 +101,42 @@ function isGoogleRedirectSupportedOnCurrentHost() {
   return true;
 }
 
-function isFirebaseHostedDomain() {
-  if (typeof window === "undefined") return false;
-  const host = String(window.location?.hostname || "").trim().toLowerCase();
-  return host.endsWith(".firebaseapp.com") || host.endsWith(".web.app");
+function markGoogleRedirectPending() {
+  if (typeof window === "undefined") return;
+  try {
+    const payload = {
+      startedAt: Date.now(),
+      host: String(window.location?.host || ""),
+      path: String(window.location?.pathname || ""),
+    };
+    window.sessionStorage?.setItem(GOOGLE_REDIRECT_PENDING_KEY, JSON.stringify(payload));
+  } catch (_) {}
 }
 
-function shouldPreferGoogleRedirect() {
-  if (typeof window === "undefined") return false;
+function readGoogleRedirectPending() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage?.getItem(GOOGLE_REDIRECT_PENDING_KEY) || "";
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const startedAt = Number(parsed.startedAt || 0);
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return null;
+    if ((Date.now() - startedAt) > GOOGLE_REDIRECT_PENDING_TTL_MS) {
+      window.sessionStorage?.removeItem(GOOGLE_REDIRECT_PENDING_KEY);
+      return null;
+    }
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
 
-  const ua = String(window.navigator?.userAgent || "").toLowerCase();
-  const coarsePointer = typeof window.matchMedia === "function"
-    ? window.matchMedia("(pointer: coarse)").matches
-    : false;
-  const smallViewport = Math.min(
-    Number(window.screen?.width || 0),
-    Number(window.screen?.height || 0)
-  ) > 0 && Math.min(
-    Number(window.screen?.width || 0),
-    Number(window.screen?.height || 0)
-  ) <= 900;
-
-  const mobileUa =
-    ua.includes("android") ||
-    ua.includes("iphone") ||
-    ua.includes("ipad") ||
-    ua.includes("ipod") ||
-    ua.includes("mobile");
-
-  return coarsePointer || smallViewport || mobileUa;
+function clearGoogleRedirectPending() {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage?.removeItem(GOOGLE_REDIRECT_PENDING_KEY);
+  } catch (_) {}
 }
 
 async function waitForResolvedPopupUser(timeoutMs = 4500) {
@@ -158,11 +168,11 @@ async function loginWithGoogle() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
   const canUseRedirect = isGoogleRedirectSupportedOnCurrentHost();
-  // Prefer redirect only on Firebase-hosted domains; keep popup-first on
-  // custom-hosted domains, but still use redirect as fallback if popup is blocked.
-  const shouldUsePreferredRedirect = canUseRedirect && isFirebaseHostedDomain() && shouldPreferGoogleRedirect();
 
-  if (shouldUsePreferredRedirect) {
+  // On production-like hosts, redirect is the most stable option across
+  // browsers (popup blockers / mobile WebView / third-party restrictions).
+  if (canUseRedirect) {
+    markGoogleRedirectPending();
     await signInWithRedirect(auth, provider);
     return { mode: "redirect", result: null };
   }
@@ -192,11 +202,23 @@ async function loginWithGoogle() {
 
 async function completeGoogleRedirectIfAny() {
   const result = await getRedirectResult(auth);
-  if (result?.user) return result;
+  if (result?.user) {
+    clearGoogleRedirectPending();
+    return result;
+  }
   if (auth.currentUser) {
+    clearGoogleRedirectPending();
     return { user: auth.currentUser };
   }
   return result;
+}
+
+function hasPendingGoogleRedirect() {
+  return Boolean(readGoogleRedirectPending());
+}
+
+function clearPendingGoogleRedirect() {
+  clearGoogleRedirectPending();
 }
 
 function watchAuthState(callback) {
@@ -211,6 +233,8 @@ export {
   loginWithEmail,
   loginWithGoogle,
   completeGoogleRedirectIfAny,
+  hasPendingGoogleRedirect,
+  clearPendingGoogleRedirect,
   signupWithEmail,
   sendPasswordReset,
   sendSignupVerificationEmail,

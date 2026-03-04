@@ -7,6 +7,8 @@ import {
   loginWithEmail,
   loginWithGoogle,
   completeGoogleRedirectIfAny,
+  hasPendingGoogleRedirect,
+  clearPendingGoogleRedirect,
   signupWithEmail,
   sendPasswordReset,
   sendSignupVerificationEmail,
@@ -31,10 +33,11 @@ let authBootstrapReady = false;
 let authStateResolved = false;
 let latestObservedUser = undefined;
 let authFallbackRenderTimer = null;
+let authBootstrapMessage = "";
 const PENDING_PROMO_STORAGE_KEY = "domino_pending_promo_code";
 const CLIENT_DEVICE_STORAGE_KEY = "domino_device_id_v1";
 const verificationEmailSentByUid = new Set();
-const APP_HOME_ROUTE = "./inedex.html";
+const APP_HOME_ROUTE = "./index.html";
 const TERMS_ROUTE = "./conditions-utilisation.html";
 const PRIVACY_ROUTE = "./politique-confidentialite.html";
 const LEGAL_ROUTE = "./mentions-legales.html";
@@ -495,6 +498,9 @@ function renderPage1() {
       </div>
     `
     : "";
+  const bootstrapInfo = authBootstrapMessage
+    ? `<div id="authInfo" class="mt-2 min-h-5 text-xs text-amber-200">${escapeAttr(authBootstrapMessage)}</div>`
+    : `<div id="authInfo" class="mt-2 min-h-5 text-xs text-amber-200"></div>`;
 
   document.body.innerHTML = `
     <div id="appRoot" class="min-h-screen bg-[#3f4766] text-white font-['Poppins']">
@@ -613,6 +619,7 @@ function renderPage1() {
             </div>
 
             <div id="authError" class="mt-4 min-h-5 text-sm text-[#ffb0b0]"></div>
+            ${bootstrapInfo}
 
             <button
               id="authSubmitBtn"
@@ -797,7 +804,10 @@ function bindPage1Events() {
   if (googleBtn) {
     googleBtn.addEventListener("click", async () => {
       const errorEl = document.getElementById("authError");
+      const infoEl = document.getElementById("authInfo");
       if (errorEl) errorEl.textContent = "";
+      authBootstrapMessage = "";
+      if (infoEl) infoEl.textContent = "";
       setForgotPasswordStatus("", "neutral");
       try {
         await withButtonLoading(googleBtn, async () => {
@@ -866,7 +876,13 @@ renderAuthLoading();
 completeGoogleRedirectIfAny()
   .then((result) => {
     if (result?.user) {
+      authBootstrapMessage = "";
+      clearPendingGoogleRedirect();
       return handleAuthenticatedUser(result.user, consumePendingPromoCode());
+    }
+    if (hasPendingGoogleRedirect()) {
+      clearPendingGoogleRedirect();
+      authBootstrapMessage = "Connexion Google interrompue. Réessaie le bouton Google.";
     }
     return null;
   })
@@ -929,6 +945,8 @@ watchAuthState((user) => {
   authStateResolved = true;
   latestObservedUser = user || null;
   if (user) {
+    authBootstrapMessage = "";
+    clearPendingGoogleRedirect();
     clearAuthFallbackRenderTimer();
     handleAuthenticatedUser(user).catch((err) => {
       console.error("Auth state redirect error:", err);

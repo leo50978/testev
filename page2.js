@@ -213,6 +213,23 @@ export function renderPage2(user) {
   stopPage2ChatWatchers();
   page2PresenceUser = user || null;
   touchClientPresence(page2PresenceUser);
+  const isAuthenticated = Boolean(user?.uid);
+  const headerActions = isAuthenticated
+    ? `
+                <button id="soldBadge" type="button" class="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white/90 shadow-[inset_4px_4px_10px_rgba(20,28,45,0.42),inset_-4px_-4px_10px_rgba(123,137,180,0.2)] backdrop-blur-md transition hover:bg-white/15">
+                  <span class="inline-flex h-5 w-5 items-center justify-center rounded-lg bg-white/20 text-[11px]">+</span>
+                  <span class="hidden sm:inline">Faire un dépôt</span>
+                  <span class="sm:hidden">Dépôt</span>
+                </button>
+                <button id="p2Profile" type="button" class="grid h-10 w-10 place-items-center rounded-xl border border-white/20 bg-white/10 text-white/85 shadow-[8px_8px_18px_rgba(22,29,45,0.4),-6px_-6px_14px_rgba(118,131,172,0.25)] backdrop-blur-md transition hover:bg-white/15 hover:text-white sm:h-11 sm:w-11" aria-label="Profil">
+                  <i class="fa-regular fa-circle-user text-[18px] sm:text-[19px]"></i>
+                </button>
+    `
+    : `
+                <button id="authCtaBtn" type="button" class="inline-flex h-10 items-center rounded-xl border border-[#ffb26e] bg-[#F57C00] px-4 text-xs font-semibold text-white shadow-[8px_8px_18px_rgba(163,82,27,0.45),-6px_-6px_14px_rgba(255,175,102,0.22)] transition hover:-translate-y-0.5 sm:h-11 sm:px-5 sm:text-sm">
+                  Connexion / Inscription
+                </button>
+    `;
 
   document.body.innerHTML = `
     <div id="page2Root" class="min-h-screen bg-[#3F4766] px-0 pt-0 pb-8 text-white font-['Poppins']">
@@ -227,14 +244,7 @@ export function renderPage2(user) {
                 <span id="p2LogoFallback" class="hidden text-2xl font-semibold tracking-tight text-white/95">Dominoes</span>
               </div>
               <div class="flex items-center gap-2 sm:gap-3">
-                <button id="soldBadge" type="button" class="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white/90 shadow-[inset_4px_4px_10px_rgba(20,28,45,0.42),inset_-4px_-4px_10px_rgba(123,137,180,0.2)] backdrop-blur-md transition hover:bg-white/15">
-                  <span class="inline-flex h-5 w-5 items-center justify-center rounded-lg bg-white/20 text-[11px]">+</span>
-                  <span class="hidden sm:inline">Faire un dépôt</span>
-                  <span class="sm:hidden">Dépôt</span>
-                </button>
-                <button id="p2Profile" type="button" class="grid h-10 w-10 place-items-center rounded-xl border border-white/20 bg-white/10 text-white/85 shadow-[8px_8px_18px_rgba(22,29,45,0.4),-6px_-6px_14px_rgba(118,131,172,0.25)] backdrop-blur-md transition hover:bg-white/15 hover:text-white sm:h-11 sm:w-11" aria-label="Profil">
-                  <i class="fa-regular fa-circle-user text-[18px] sm:text-[19px]"></i>
-                </button>
+                ${headerActions}
               </div>
             </div>
           </header>
@@ -421,6 +431,7 @@ export function renderPage2(user) {
 
   const logo = document.getElementById("p2Logo");
   const logoFallback = document.getElementById("p2LogoFallback");
+  const authCtaBtn = document.getElementById("authCtaBtn");
   const startGameBtn = document.getElementById("startGameBtn");
   const rulesBtn = document.getElementById("gameRulesBtn");
   const rulesOverlay = document.getElementById("rulesModalOverlay");
@@ -440,6 +451,11 @@ export function renderPage2(user) {
     logo.addEventListener("error", () => {
       logo.classList.add("hidden");
       logoFallback.classList.remove("hidden");
+    });
+  }
+  if (authCtaBtn) {
+    authCtaBtn.addEventListener("click", () => {
+      window.location.href = "./auth.html";
     });
   }
 
@@ -529,6 +545,10 @@ export function renderPage2(user) {
 
   if (startGameBtn) {
     startGameBtn.addEventListener("click", () => {
+      if (!isAuthenticated) {
+        window.location.href = "./auth.html";
+        return;
+      }
       openStakeSelection();
     });
   }
@@ -604,8 +624,10 @@ export function renderPage2(user) {
     });
   }
 
-  mountProfileModal({ triggerSelector: "#p2Profile" });
-  mountSoldeModal({ triggerSelector: "#soldBadge" });
+  if (isAuthenticated) {
+    mountProfileModal({ triggerSelector: "#p2Profile" });
+    mountSoldeModal({ triggerSelector: "#soldBadge" });
+  }
   initDiscussionFab(user);
   initAgentSupportAlert(user);
 }
