@@ -72,12 +72,10 @@ function resolveRuntimeAuthDomain(defaultAuthDomain) {
   if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local")) {
     return defaultAuthDomain;
   }
-  // On non-Firebase hosting (ex: GitHub Pages custom domain), keep the
-  // canonical Firebase authDomain to avoid broken /__/auth/handler handling.
-  if (host.endsWith(".firebaseapp.com") || host.endsWith(".web.app")) {
-    return host;
+  if (host === "www.dominoeslakay.com") {
+    return "dominoeslakay.com";
   }
-  return defaultAuthDomain;
+  return host;
 }
 
 firebaseConfig.authDomain = resolveRuntimeAuthDomain(firebaseConfig.authDomain);
