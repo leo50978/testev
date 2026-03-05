@@ -126,6 +126,14 @@ function sanitizeText(value, maxLength = 160) {
     .slice(0, maxLength);
 }
 
+function sanitizeUsername(value, maxLength = 24) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "")
+    .slice(0, maxLength);
+}
+
 function sanitizeEmail(value, maxLength = 160) {
   const out = sanitizeText(value, maxLength).toLowerCase();
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(out) ? out : "";
@@ -3513,6 +3521,8 @@ exports.updateClientProfileSecure = publicOnCall("updateClientProfileSecure", as
   const name = sanitizeText(payload.name || "", 80);
   const phone = sanitizePhone(payload.phone || "", 40);
   const photoURL = sanitizePublicAsset(payload.photoURL || "", 400);
+  const usernameInput = sanitizeUsername(payload.username || "", 24);
+  const oneClickIdInput = sanitizeText(payload.oneClickId || "", 64).toUpperCase();
   const promoCode = normalizeCode(payload.promoCode || "");
   const referralSource = String(payload.referralSource || "").toLowerCase() === "link" ? "link" : "promo";
   const context = sanitizeAnalyticsContext(payload, request);
@@ -3532,6 +3542,8 @@ exports.updateClientProfileSecure = publicOnCall("updateClientProfileSecure", as
     name: name || sanitizeText(current.name || String(email || "").split("@")[0] || "Player", 80),
     phone: phone || sanitizePhone(current.phone || ""),
     photoURL: photoURL || sanitizePublicAsset(current.photoURL || ""),
+    username: usernameInput || sanitizeUsername(current.username || "", 24),
+    oneClickId: oneClickIdInput || sanitizeText(current.oneClickId || "", 64).toUpperCase(),
     referralCode,
     deviceId: context.deviceId || String(current.deviceId || ""),
     appVersion: context.appVersion || String(current.appVersion || ""),
@@ -3589,6 +3601,8 @@ exports.updateClientProfileSecure = publicOnCall("updateClientProfileSecure", as
       name: String(finalProfile.name || profile.name || ""),
       phone: sanitizePhone(finalProfile.phone || profile.phone || ""),
       photoURL: sanitizePublicAsset(finalProfile.photoURL || profile.photoURL || ""),
+      username: sanitizeUsername(finalProfile.username || profile.username || "", 24),
+      oneClickId: sanitizeText(finalProfile.oneClickId || profile.oneClickId || "", 64).toUpperCase(),
       referralCode: finalReferralCode,
       referralLink: buildUserReferralLink(finalReferralCode),
       referralSignupsTotal: safeInt(finalProfile.referralSignupsTotal),
