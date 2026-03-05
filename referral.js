@@ -24,6 +24,7 @@ const AMBASSADOR_EVENTS_COLLECTION = "ambassadorGameEvents";
 const USER_REFERRAL_PREFIX = "USR";
 const AMBASSADOR_PROMO_PREFIX = "AMB";
 const AMBASSADOR_LINK_PREFIX = "AML";
+const AMBASSADOR_FEATURE_ENABLED = false;
 
 export const USER_REFERRAL_DEPOSIT_REWARD = 100;
 export const AMBASSADOR_LOSS_BONUS = 50;
@@ -115,7 +116,9 @@ export function getReferralContextFromUrl(search = window.location.search) {
   const params = new URLSearchParams(search || "");
   return {
     userCodeFromLink: normalizeCode(params.get("ref") || params.get("referral") || ""),
-    ambassadorCodeFromLink: normalizeCode(params.get("amb") || params.get("ambassador") || ""),
+    ambassadorCodeFromLink: AMBASSADOR_FEATURE_ENABLED
+      ? normalizeCode(params.get("amb") || params.get("ambassador") || "")
+      : "",
     promoCodeFromQuery: normalizeCode(params.get("promo") || params.get("code") || ""),
   };
 }
@@ -186,6 +189,7 @@ async function resolveReferralTarget(candidate, uid, ownReferralCode) {
   }
 
   if (preferAmbassador) {
+    if (!AMBASSADOR_FEATURE_ENABLED) return null;
     const amb = await findAmbassadorByCode(normalized);
     if (amb) {
       return {
@@ -208,14 +212,16 @@ async function resolveReferralTarget(candidate, uid, ownReferralCode) {
     };
   }
 
-  const fromAmb = await findAmbassadorByCode(normalized);
-  if (fromAmb) {
-    return {
-      type: "ambassador",
-      id: fromAmb.id,
-      code: normalized,
-      via: candidate.via,
-    };
+  if (AMBASSADOR_FEATURE_ENABLED) {
+    const fromAmb = await findAmbassadorByCode(normalized);
+    if (fromAmb) {
+      return {
+        type: "ambassador",
+        id: fromAmb.id,
+        code: normalized,
+        via: candidate.via,
+      };
+    }
   }
 
   return null;
@@ -321,6 +327,7 @@ async function applyUserReferralTarget({ uid, target, email }) {
 }
 
 async function applyAmbassadorReferralTarget({ uid, target, email }) {
+  if (!AMBASSADOR_FEATURE_ENABLED) return false;
   const clientRef = doc(db, CLIENTS_COLLECTION, uid);
   const ambassadorRef = doc(db, AMBASSADORS_COLLECTION, target.id);
   const ambassadorUserRef = doc(db, AMBASSADORS_COLLECTION, target.id, "referrals", uid);
@@ -406,7 +413,9 @@ export async function maybeApplyReferralAttribution(user, options = {}) {
     promoFromInput ? { code: promoFromInput, via: "promo", hintType: null } : null,
     urlCtx.promoCodeFromQuery ? { code: urlCtx.promoCodeFromQuery, via: "promo", hintType: null } : null,
     urlCtx.userCodeFromLink ? { code: urlCtx.userCodeFromLink, via: "link", hintType: "user" } : null,
-    urlCtx.ambassadorCodeFromLink ? { code: urlCtx.ambassadorCodeFromLink, via: "link", hintType: "ambassador" } : null,
+    (AMBASSADOR_FEATURE_ENABLED && urlCtx.ambassadorCodeFromLink)
+      ? { code: urlCtx.ambassadorCodeFromLink, via: "link", hintType: "ambassador" }
+      : null,
   ].filter(Boolean));
 
   if (!candidates.length) {
@@ -511,6 +520,9 @@ export async function getUserReferralSummary(uid) {
 }
 
 export async function createAmbassadorAccount(options = {}) {
+  if (!AMBASSADOR_FEATURE_ENABLED) {
+    throw new Error("Système ambassadeur désactivé.");
+  }
   const name = String(options.name || "").trim();
   const authCode = String(options.authCode || "").trim();
   if (!name) throw new Error("Nom ambassadeur requis.");
@@ -549,6 +561,7 @@ export async function createAmbassadorAccount(options = {}) {
 }
 
 export async function authenticateAmbassador(options = {}) {
+  if (!AMBASSADOR_FEATURE_ENABLED) return { ok: false, reason: "disabled" };
   const code = normalizeCode(options.promoCode || options.code || "");
   const authCode = String(options.authCode || "").trim();
   if (!code || !authCode) return { ok: false, reason: "missing" };
@@ -576,6 +589,7 @@ export async function authenticateAmbassador(options = {}) {
 }
 
 export async function getAmbassadorDashboardData(ambassadorId) {
+  if (!AMBASSADOR_FEATURE_ENABLED) return null;
   if (!ambassadorId) return null;
 
   const ambRef = doc(db, AMBASSADORS_COLLECTION, ambassadorId);
@@ -642,6 +656,7 @@ export async function getAmbassadorDashboardData(ambassadorId) {
 }
 
 export async function applyAmbassadorGameOutcome(options = {}) {
+  if (!AMBASSADOR_FEATURE_ENABLED) return { applied: false, reason: "disabled" };
   const uid = options.uid || "";
   const roomId = String(options.roomId || "").trim();
   if (!uid || !roomId) return { applied: false, reason: "missing" };
@@ -663,6 +678,7 @@ export async function applyAmbassadorGameOutcome(options = {}) {
 }
 
 export async function getAmbassadorById(ambassadorId) {
+  if (!AMBASSADOR_FEATURE_ENABLED) return null;
   if (!ambassadorId) return null;
   const snap = await getDoc(doc(db, AMBASSADORS_COLLECTION, ambassadorId));
   if (!snap.exists()) return null;

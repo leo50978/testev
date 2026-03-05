@@ -89,6 +89,25 @@ const db = getFirestore(app);
 const functions = getFunctions(app);
 const storage = getStorage(app);
 
+function shouldSkipAppCheckOnCurrentPage() {
+  if (typeof window === "undefined") return false;
+  const path = String(window.location?.pathname || "").toLowerCase();
+  const protocol = String(window.location?.protocol || "").toLowerCase();
+  const host = String(window.location?.hostname || "").toLowerCase();
+  const isLocalDevHost =
+    protocol === "file:" ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.endsWith(".local");
+  return (
+    isLocalDevHost ||
+    path.endsWith("/auth.html") ||
+    path.endsWith("auth.html") ||
+    path.startsWith("/__/auth/")
+  );
+}
+
 function readAppCheckSiteKey() {
   const meta = typeof document !== "undefined"
     ? document.querySelector('meta[name="firebase-app-check-site-key"]')
@@ -113,16 +132,25 @@ function setupAppCheckDebugToken() {
 
 let appCheck = null;
 let appCheckBootstrapPromise = null;
+let appCheckBootstrapScheduled = false;
 
 function initializeAppCheckWithKey(siteKey) {
   const normalized = String(siteKey || "").trim();
   if (!normalized || normalized === "REPLACE_WITH_RECAPTCHA_V3_SITE_KEY") return false;
   if (appCheck) return true;
+  if (typeof document !== "undefined" && !document.body) return false;
 
-  appCheck = initializeAppCheck(app, {
-    provider: new ReCaptchaV3Provider(normalized),
-    isTokenAutoRefreshEnabled: true,
-  });
+  try {
+    appCheck = initializeAppCheck(app, {
+      provider: new ReCaptchaV3Provider(normalized),
+      isTokenAutoRefreshEnabled: true,
+    });
+  } catch (error) {
+    const message = String(error?.message || "");
+    // reCAPTCHA can fail if the page is not fully ready yet; allow a deferred retry.
+    if (message.includes("placeholder element")) return false;
+    throw error;
+  }
 
   if (typeof window !== "undefined") {
     window.__DOMINO_APPCHECK_SITE_KEY = normalized;
@@ -132,6 +160,7 @@ function initializeAppCheckWithKey(siteKey) {
 }
 
 async function bootstrapRemoteAppCheck() {
+  if (shouldSkipAppCheckOnCurrentPage()) return null;
   if (appCheck || appCheckBootstrapPromise) return appCheckBootstrapPromise;
 
   appCheckBootstrapPromise = (async () => {
@@ -155,12 +184,42 @@ async function bootstrapRemoteAppCheck() {
   return appCheckBootstrapPromise;
 }
 
-try {
+function initializeAppCheckSafely() {
+  if (shouldSkipAppCheckOnCurrentPage()) {
+    if (typeof console !== "undefined") {
+      console.info("[APP_CHECK] ignoré en environnement local/dev ou page d'authentification.");
+    }
+    return;
+  }
+
   setupAppCheckDebugToken();
   const siteKey = readAppCheckSiteKey();
   if (!initializeAppCheckWithKey(siteKey)) {
     void bootstrapRemoteAppCheck();
   }
+
+  if (!appCheck && !appCheckBootstrapScheduled && typeof document !== "undefined" && document.readyState === "loading") {
+    appCheckBootstrapScheduled = true;
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        try {
+          initializeAppCheckSafely();
+        } catch (error) {
+          if (typeof console !== "undefined") {
+            console.warn("[APP_CHECK] initialisation différée échouée", error);
+          }
+        } finally {
+          appCheckBootstrapScheduled = false;
+        }
+      },
+      { once: true }
+    );
+  }
+}
+
+try {
+  initializeAppCheckSafely();
 } catch (error) {
   if (typeof console !== "undefined") {
     console.warn("[APP_CHECK] initialisation échouée", error);

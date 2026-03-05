@@ -125,13 +125,13 @@ function ensureProfileModal() {
         </div>
 
         <div class="mt-6 rounded-2xl border border-white/20 bg-white/10 p-4 shadow-[inset_6px_6px_14px_rgba(18,24,38,0.34),inset_-6px_-6px_14px_rgba(110,124,163,0.18)] backdrop-blur-md sm:p-5">
-          <div class="flex items-center gap-4">
-            <div class="grid h-16 w-16 place-items-center rounded-2xl border border-white/20 bg-white/10 text-white shadow-[8px_8px_18px_rgba(20,27,44,0.38),-6px_-6px_14px_rgba(120,133,172,0.2)]">
+          <div class="flex min-w-0 items-center gap-3 sm:gap-4">
+            <div class="grid h-16 w-16 shrink-0 place-items-center rounded-2xl border border-white/20 bg-white/10 text-white shadow-[8px_8px_18px_rgba(20,27,44,0.38),-6px_-6px_14px_rgba(120,133,172,0.2)]">
               <i class="fa-regular fa-circle-user text-3xl"></i>
             </div>
-            <div>
-              <p id="profileName" class="text-lg font-semibold text-white">Player</p>
-              <p id="profileEmail" class="text-sm text-white/75">-</p>
+            <div class="min-w-0 flex-1">
+              <p id="profileName" class="truncate text-lg font-semibold text-white">Player</p>
+              <p id="profileEmail" class="mt-0.5 truncate text-sm text-white/75">-</p>
             </div>
           </div>
         </div>
@@ -404,8 +404,16 @@ function updateProfileData(user) {
     });
   }
 
-  if (nameEl) nameEl.textContent = getDisplayName(user);
-  if (emailEl) emailEl.textContent = user?.email || "-";
+  if (nameEl) {
+    const displayName = getDisplayName(user);
+    nameEl.textContent = displayName;
+    nameEl.title = displayName || "";
+  }
+  if (emailEl) {
+    const email = user?.email || "-";
+    emailEl.textContent = email;
+    emailEl.title = email;
+  }
   if (balanceEl) balanceEl.textContent = formatAmount(xState.availableGourdes);
   if (doesEl) doesEl.textContent = String(xState.does || 0);
   if (exchangedEl) exchangedEl.textContent = `Échangé: ${xState.exchangedGourdes} HTG`;

@@ -22,8 +22,14 @@ service firebase.storage {
 
     function isFinanceAdmin() {
       return signedIn()
-        && request.auth.token.email != null
-        && request.auth.token.email == "leovitch2004@gmail.com";
+        && (
+          request.auth.token.admin == true
+          || request.auth.token.financeAdmin == true
+          || (
+            request.auth.token.email != null
+            && request.auth.token.email == "leovitch2004@gmail.com"
+          )
+        );
     }
 
     match /chat-media/channel/{allPaths=**} {

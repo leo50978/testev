@@ -6,6 +6,7 @@ import { createAmbassadorAccount, normalizeCode } from "./referral.js";
 
 const OWNER_EMAIL_ALLOWLIST = ["leovitch2004@gmail.com"];
 const DISABLE_DASHBOARD_OWNER_GUARD = false;
+const AMBASSADOR_UI_ENABLED = false;
 
 const elements = {
   ownerAuthStatus: document.getElementById("ownerAuthStatus"),
@@ -172,6 +173,19 @@ function initAuthWatcher() {
 }
 
 async function init() {
+  if (!AMBASSADOR_UI_ENABLED) {
+    document.body.innerHTML = `
+      <main style="min-height:100vh;display:grid;place-items:center;background:#f8fafc;color:#0f172a;font-family:Poppins,sans-serif;padding:24px;">
+        <section style="width:min(92vw,640px);border:1px solid rgba(148,163,184,.5);border-radius:20px;background:#ffffff;padding:24px;box-shadow:0 20px 50px rgba(15,23,42,.12);">
+          <h1 style="margin:0 0 10px;font-size:1.3rem;font-weight:800;">Création ambassadeur désactivée</h1>
+          <p style="margin:0;color:#475569;line-height:1.5;">
+            Cette page a été désactivée car le système ambassadeur n'est plus utilisé dans l'application.
+          </p>
+        </section>
+      </main>
+    `;
+    return;
+  }
   bindEvents();
   initAuthWatcher();
   renderOwnerStatus(auth.currentUser || null);

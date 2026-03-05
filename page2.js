@@ -1,9 +1,13 @@
 import { mountProfileModal } from "./profil.js";
 import { mountSoldeModal } from "./solde.js";
 import { ensureXchangeState, getXchangeState } from "./xchange.js";
-import { withButtonLoading } from "./loading-ui.js";
-import { getPublicGameStakeOptionsSecure } from "./secure-functions.js";
-import { db, collection, query, orderBy, limit, onSnapshot, doc, setDoc, serverTimestamp } from "./firebase-init.js";
+import {
+  withButtonLoading,
+  showGlobalLoading,
+  hideGlobalLoading,
+} from "./loading-ui.js";
+import { getPublicGameStakeOptionsSecure, updateClientProfileSecure } from "./secure-functions.js";
+import { auth, db, collection, query, orderBy, limit, onSnapshot, doc, setDoc, serverTimestamp } from "./firebase-init.js";
 
 const CHAT_COLLECTION = "globalChannelMessages";
 const SUPPORT_THREADS_COLLECTION = "supportThreads";
@@ -20,6 +24,7 @@ let page2ChatSeenUnsub = null;
 let page2SupportThreadUnsub = null;
 let page2PresenceVisibilityBound = false;
 let page2PresenceUser = null;
+const profileBootstrapInFlightByUid = new Map();
 
 function safeInt(value) {
   const num = Number(value);
@@ -124,12 +129,42 @@ async function touchClientPresence(user) {
   }
 }
 
+function ensureClientReferralBootstrap(user) {
+  const uid = String(user?.uid || "");
+  if (!uid) return Promise.resolve(null);
+  if (profileBootstrapInFlightByUid.has(uid)) return profileBootstrapInFlightByUid.get(uid);
+
+  const promise = (async () => {
+    try {
+      const result = await updateClientProfileSecure({});
+      const referralCode = String(result?.profile?.referralCode || "").trim();
+      if (!referralCode) {
+        console.warn("[PROFILE_BOOTSTRAP] referralCode absent apres updateClientProfileSecure", { uid });
+      }
+      return result;
+    } catch (error) {
+      console.warn("[PROFILE_BOOTSTRAP] impossible de (re)generer le profil referral", {
+        uid,
+        code: String(error?.code || ""),
+        message: String(error?.message || error),
+      });
+      return null;
+    } finally {
+      profileBootstrapInFlightByUid.delete(uid);
+    }
+  })();
+
+  profileBootstrapInFlightByUid.set(uid, promise);
+  return promise;
+}
+
 function initDiscussionFab(user) {
   const fabBtn = document.getElementById("discussionFabBtn");
   const badge = document.getElementById("discussionFabBadge");
   if (!fabBtn || !badge) return;
 
   fabBtn.addEventListener("click", () => {
+    showGlobalLoading("Ouverture de la discussion...");
     window.location.href = "./discussion.html";
   });
 
@@ -194,6 +229,7 @@ function initAgentSupportAlert(user) {
   if (alertBtn.dataset.bound !== "1") {
     alertBtn.dataset.bound = "1";
     alertBtn.addEventListener("click", () => {
+      showGlobalLoading("Ouverture du support...");
       window.location.href = "./discussion-agent.html";
     });
   }
@@ -224,11 +260,21 @@ function initAgentSupportAlert(user) {
   );
 }
 
-export function renderPage2(user) {
+export function renderPage2(user, options = {}) {
+  hideGlobalLoading();
   stopPage2ChatWatchers();
   page2PresenceUser = user || null;
-  touchClientPresence(page2PresenceUser);
-  const isAuthenticated = Boolean(user?.uid);
+  const incomingUid = String(page2PresenceUser?.uid || "");
+  const currentAuthUid = String(auth.currentUser?.uid || "");
+  const hasConfirmedAuth = Boolean(incomingUid && currentAuthUid && incomingUid === currentAuthUid);
+  const isOptimisticAuth = options?.optimisticAuth === true && !hasConfirmedAuth && Boolean(incomingUid);
+  const isAuthenticated = Boolean(incomingUid);
+
+  if (hasConfirmedAuth) {
+    void ensureClientReferralBootstrap(page2PresenceUser);
+    touchClientPresence(page2PresenceUser);
+  }
+
   const headerActions = isAuthenticated
     ? `
                 <button id="soldBadge" type="button" class="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white/90 shadow-[inset_4px_4px_10px_rgba(20,28,45,0.42),inset_-4px_-4px_10px_rgba(123,137,180,0.2)] backdrop-blur-md transition hover:bg-white/15">
@@ -247,9 +293,9 @@ export function renderPage2(user) {
     `;
 
   document.body.innerHTML = `
-    <div id="page2Root" class="min-h-screen bg-[#3F4766] px-0 pt-0 pb-8 text-white font-['Poppins']">
+    <div id="page2Root" class="min-h-[100dvh] bg-[#3F4766] px-0 pt-0 pb-[max(2rem,env(safe-area-inset-bottom))] text-white font-['Poppins'] overflow-x-hidden">
       <div class="w-full">
-        <section class="relative h-[80vh] min-h-[420px] w-full overflow-hidden rounded-none">
+        <section class="relative h-[80dvh] min-h-[420px] w-full overflow-hidden rounded-none">
           <img src="hero.jpg" alt="Hero" class="h-full w-full object-cover" />
           <div class="absolute inset-0 bg-[#3F4766]/55 backdrop-blur-[1px]"></div>
           <header class="fixed inset-x-0 top-3 z-40 px-3 sm:top-4 sm:px-5">
@@ -289,7 +335,11 @@ export function renderPage2(user) {
     page2PresenceVisibilityBound = true;
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
-        touchClientPresence(page2PresenceUser);
+        const targetUid = String(page2PresenceUser?.uid || "");
+        const currentUid = String(auth.currentUser?.uid || "");
+        if (targetUid && currentUid && targetUid === currentUid) {
+          touchClientPresence(page2PresenceUser);
+        }
       }
     });
   }
@@ -459,6 +509,8 @@ export function renderPage2(user) {
   const logo = document.getElementById("p2Logo");
   const logoFallback = document.getElementById("p2LogoFallback");
   const authCtaBtn = document.getElementById("authCtaBtn");
+  const profileBtn = document.getElementById("p2Profile");
+  const soldBadgeBtn = document.getElementById("soldBadge");
   const startGameBtn = document.getElementById("startGameBtn");
   const rulesBtn = document.getElementById("gameRulesBtn");
   const rulesOverlay = document.getElementById("rulesModalOverlay");
@@ -482,8 +534,17 @@ export function renderPage2(user) {
   }
   if (authCtaBtn) {
     authCtaBtn.addEventListener("click", () => {
+      showGlobalLoading("Ouverture de la connexion...");
       window.location.href = "./auth.html";
     });
+  }
+  if (isOptimisticAuth && profileBtn) {
+    profileBtn.setAttribute("aria-disabled", "true");
+    profileBtn.classList.add("pointer-events-none", "opacity-60", "cursor-wait");
+  }
+  if (isOptimisticAuth && soldBadgeBtn) {
+    soldBadgeBtn.setAttribute("aria-disabled", "true");
+    soldBadgeBtn.classList.add("pointer-events-none", "opacity-70", "cursor-wait");
   }
 
   const closeRules = () => {
@@ -573,7 +634,15 @@ export function renderPage2(user) {
   if (startGameBtn) {
     startGameBtn.addEventListener("click", () => {
       if (!isAuthenticated) {
+        showGlobalLoading("Redirection vers la connexion...");
         window.location.href = "./auth.html";
+        return;
+      }
+      if (isOptimisticAuth) {
+        showGlobalLoading("Finalisation de la session...");
+        window.setTimeout(() => {
+          hideGlobalLoading();
+        }, 1600);
         return;
       }
       openStakeSelection();
@@ -623,6 +692,7 @@ export function renderPage2(user) {
           return;
         }
         closeStakeSelection();
+        showGlobalLoading("Ouverture de la partie...");
         window.location.href = `./jeu.html?autostart=1&stake=${stakeAmount}`;
       }, { loadingLabel: "Vérification..." });
     });
@@ -651,10 +721,11 @@ export function renderPage2(user) {
     });
   }
 
-  if (isAuthenticated) {
+  if (hasConfirmedAuth) {
     mountProfileModal({ triggerSelector: "#p2Profile" });
     mountSoldeModal({ triggerSelector: "#soldBadge" });
   }
-  initDiscussionFab(user);
-  initAgentSupportAlert(user);
+  const effectiveUser = hasConfirmedAuth ? user : null;
+  initDiscussionFab(effectiveUser);
+  initAgentSupportAlert(effectiveUser);
 }

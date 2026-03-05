@@ -10,6 +10,7 @@ import {
 } from "./referral.js";
 
 const AMBASSADOR_SESSION_KEY = "domino_ambassador_session_v1";
+const AMBASSADOR_UI_ENABLED = false;
 
 const elements = {
   loginPanel: document.getElementById("ambLoginPanel"),
@@ -454,6 +455,19 @@ function bindEvents() {
 }
 
 function init() {
+  if (!AMBASSADOR_UI_ENABLED) {
+    document.body.innerHTML = `
+      <main style="min-height:100vh;display:grid;place-items:center;background:#0f172a;color:#e2e8f0;font-family:Poppins,sans-serif;padding:24px;">
+        <section style="width:min(92vw,640px);border:1px solid rgba(148,163,184,.35);border-radius:20px;background:rgba(15,23,42,.72);padding:24px;box-shadow:0 20px 50px rgba(2,6,23,.45);">
+          <h1 style="margin:0 0 10px;font-size:1.35rem;font-weight:800;">Module ambassadeur désactivé</h1>
+          <p style="margin:0;color:#cbd5e1;line-height:1.5;">
+            Cette interface n'est plus disponible. Le système ambassadeur a été neutralisé pour l'application.
+          </p>
+        </section>
+      </main>
+    `;
+    return;
+  }
   bindEvents();
   clearDashboard();
   setLoggedIn(false);

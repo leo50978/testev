@@ -20,7 +20,11 @@ import {
   watchAuthState,
 } from "./auth.js";
 import { renderPage2 } from "./page2.js";
-import { withButtonLoading } from "./loading-ui.js";
+import {
+  withButtonLoading,
+  showGlobalLoading,
+  hideGlobalLoading,
+} from "./loading-ui.js";
 import {
   getReferralContextFromUrl,
   normalizeCode,
@@ -268,7 +272,33 @@ function ensureOneClickModal() {
           </div>
           <div>
             <label for="oneClickPassword" class="mb-1 block text-xs text-white/70">Mot de passe</label>
-            <input id="oneClickPassword" type="password" autocomplete="new-password" placeholder="Min 6 caractères" class="block w-full rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-sm text-white placeholder-white/60 outline-none focus:border-[#f48f45]" />
+            <div class="relative">
+              <input id="oneClickPassword" type="password" autocomplete="new-password" placeholder="Min 6 caractères" class="block w-full rounded-2xl border border-white/20 bg-white/10 px-4 py-3 pr-12 text-sm text-white placeholder-white/60 outline-none focus:border-[#f48f45]" />
+              <button
+                id="oneClickPasswordToggleBtn"
+                type="button"
+                aria-label="Afficher le mot de passe"
+                title="Afficher le mot de passe"
+                class="absolute inset-y-0 right-2 my-auto grid h-9 w-9 place-items-center rounded-xl border border-white/20 bg-white/10 text-white/90 transition hover:bg-white/20"
+              >
+                <i class="fa-regular fa-eye"></i>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label for="oneClickPasswordConfirm" class="mb-1 block text-xs text-white/70">Confirmer le mot de passe</label>
+            <div class="relative">
+              <input id="oneClickPasswordConfirm" type="password" autocomplete="new-password" placeholder="Confirme ton mot de passe" class="block w-full rounded-2xl border border-white/20 bg-white/10 px-4 py-3 pr-12 text-sm text-white placeholder-white/60 outline-none focus:border-[#f48f45]" />
+              <button
+                id="oneClickPasswordConfirmToggleBtn"
+                type="button"
+                aria-label="Afficher le mot de passe de confirmation"
+                title="Afficher le mot de passe de confirmation"
+                class="absolute inset-y-0 right-2 my-auto grid h-9 w-9 place-items-center rounded-xl border border-white/20 bg-white/10 text-white/90 transition hover:bg-white/20"
+              >
+                <i class="fa-regular fa-eye"></i>
+              </button>
+            </div>
           </div>
         </div>
         <div id="oneClickAuthError" class="mt-3 min-h-5 text-sm text-[#ffb0b0]"></div>
@@ -291,9 +321,26 @@ function openOneClickModal() {
   const overlay = ensureOneClickModal();
   const usernameInput = document.getElementById("oneClickUsername");
   const passwordInput = document.getElementById("oneClickPassword");
+  const passwordConfirmInput = document.getElementById("oneClickPasswordConfirm");
   const errorEl = document.getElementById("oneClickAuthError");
   if (usernameInput) usernameInput.value = "";
   if (passwordInput) passwordInput.value = "";
+  if (passwordConfirmInput) passwordConfirmInput.value = "";
+  if (passwordInput) passwordInput.type = "password";
+  if (passwordConfirmInput) passwordConfirmInput.type = "password";
+  const resetEyeState = (btnId) => {
+    const btn = document.getElementById(btnId);
+    const icon = btn?.querySelector("i");
+    if (!btn) return;
+    btn.setAttribute("aria-label", "Afficher le mot de passe");
+    btn.setAttribute("title", "Afficher le mot de passe");
+    if (icon) {
+      icon.classList.add("fa-eye");
+      icon.classList.remove("fa-eye-slash");
+    }
+  };
+  resetEyeState("oneClickPasswordToggleBtn");
+  resetEyeState("oneClickPasswordConfirmToggleBtn");
   if (errorEl) errorEl.textContent = "";
   overlay.classList.remove("hidden");
   overlay.classList.add("flex");
@@ -398,6 +445,7 @@ async function showEmailVerificationModal(user) {
     uid: String(user?.uid || ""),
     email: String(user?.email || ""),
   });
+  hideGlobalLoading();
   const overlay = ensureEmailVerificationModal();
   const emailTarget = document.getElementById("emailVerifyTarget");
   if (emailTarget) emailTarget.textContent = user?.email || "ton adresse email";
@@ -444,6 +492,7 @@ function redirectToHomeApp(user) {
   });
   if (redirectingToApp) return;
   redirectingToApp = true;
+  showGlobalLoading("Connexion réussie. Chargement de l'accueil...");
   storeAuthSuccessNotice();
   setAuthBootstrapMessage("Connexion réussie. Redirection vers l'accueil...", "success");
   const currentPath = String(window.location.pathname || "");
@@ -461,6 +510,7 @@ function redirectToHomeApp(user) {
   });
   if (onHomePage) {
     pageAuthDebug("redirectToHomeApp:renderPage2Inline");
+    hideGlobalLoading();
     renderPage2(user || auth.currentUser);
     return;
   }
@@ -484,7 +534,7 @@ async function bootstrapReferralBeforeRedirect(user, explicitPromoCode = "") {
   const pendingUsername = consumePendingUsername();
   const pendingOneClickId = consumePendingOneClickId();
   const queryPromoCode = normalizeCode(urlCtx.promoCodeFromQuery || "");
-  const linkReferralCode = normalizeCode(urlCtx.userCodeFromLink || urlCtx.ambassadorCodeFromLink || "");
+  const linkReferralCode = normalizeCode(urlCtx.userCodeFromLink || "");
 
   let referralPayload = {};
   if (typedPromoCode) {
@@ -538,6 +588,7 @@ async function handleAuthenticatedUser(user, explicitPromoCode = "") {
     explicitPromoCode: String(explicitPromoCode || ""),
   });
   if (!user) return;
+  showGlobalLoading("Connexion en cours...");
   clearAuthFallbackRenderTimer();
   if (userRequiresEmailVerification(user)) {
     pageAuthDebug("handleAuthenticatedUser:requiresEmailVerification");
@@ -545,7 +596,32 @@ async function handleAuthenticatedUser(user, explicitPromoCode = "") {
     return;
   }
   closeEmailVerificationModal();
-  await bootstrapReferralBeforeRedirect(user, explicitPromoCode);
+  const hasPendingPromo = Boolean(sessionStorage.getItem(PENDING_PROMO_STORAGE_KEY));
+  const hasPendingUsername = Boolean(sessionStorage.getItem(PENDING_USERNAME_STORAGE_KEY));
+  const hasPendingOneClickId = Boolean(sessionStorage.getItem(PENDING_ONECLICK_ID_STORAGE_KEY));
+  const shouldBlockRedirectForReferral =
+    Boolean(normalizeCode(explicitPromoCode || "")) ||
+    hasPendingPromo ||
+    hasPendingUsername ||
+    hasPendingOneClickId;
+
+  pageAuthDebug("handleAuthenticatedUser:bootstrapMode", {
+    shouldBlockRedirectForReferral,
+    hasPendingPromo,
+    hasPendingUsername,
+    hasPendingOneClickId,
+  });
+
+  if (shouldBlockRedirectForReferral) {
+    await bootstrapReferralBeforeRedirect(user, explicitPromoCode);
+  } else {
+    void bootstrapReferralBeforeRedirect(user, explicitPromoCode).catch((err) => {
+      pageAuthDebug("handleAuthenticatedUser:bootstrapBackgroundError", {
+        error: String(err?.message || err),
+        code: String(err?.code || ""),
+      });
+    });
+  }
   pageAuthDebug("handleAuthenticatedUser:redirectToHome");
   redirectToHomeApp(user);
 }
@@ -562,16 +638,16 @@ function renderAuthLoading() {
 
 function renderPage1() {
   pageAuthDebug("renderPage1");
+  hideGlobalLoading();
   const modeTitle = authMode === "signin" ? "SE CONNECTER" : "S'INSCRIRE";
   const helperPrefix = authMode === "signin" ? "Pas encore de compte ?" : "Déjà un compte ?";
   const helperAction = authMode === "signin" ? "S'inscrire" : "Se connecter";
   const identifierPlaceholder = authMode === "signin" ? "Username ou email" : "Email";
   const referralCtx = getReferralContextFromUrl(window.location.search);
-  const hintCode = referralCtx.ambassadorCodeFromLink || referralCtx.userCodeFromLink;
+  const hintCode = referralCtx.userCodeFromLink;
   const promoPrefill = normalizeCode(
     referralCtx.promoCodeFromQuery ||
     referralCtx.userCodeFromLink ||
-    referralCtx.ambassadorCodeFromLink ||
     ""
   );
   const referralHint = authMode === "signup" && hintCode
@@ -933,6 +1009,22 @@ function bindPage1Events() {
   const oneClickErrorEl = document.getElementById("oneClickAuthError");
   const oneClickUsernameInput = document.getElementById("oneClickUsername");
   const oneClickPasswordInput = document.getElementById("oneClickPassword");
+  const oneClickPasswordConfirmInput = document.getElementById("oneClickPasswordConfirm");
+  const oneClickPasswordToggleBtn = document.getElementById("oneClickPasswordToggleBtn");
+  const oneClickPasswordConfirmToggleBtn = document.getElementById("oneClickPasswordConfirmToggleBtn");
+
+  bindPasswordToggle(
+    oneClickPasswordInput,
+    oneClickPasswordToggleBtn,
+    "Afficher le mot de passe",
+    "Masquer le mot de passe"
+  );
+  bindPasswordToggle(
+    oneClickPasswordConfirmInput,
+    oneClickPasswordConfirmToggleBtn,
+    "Afficher le mot de passe de confirmation",
+    "Masquer le mot de passe de confirmation"
+  );
 
   if (oneClickCancelBtn && oneClickCancelBtn.dataset.bound !== "1") {
     oneClickCancelBtn.dataset.bound = "1";
@@ -954,6 +1046,7 @@ function bindPage1Events() {
       const usernameRaw = String(oneClickUsernameInput?.value || "").trim();
       const username = normalizeUsername(usernameRaw);
       const password = String(oneClickPasswordInput?.value || "");
+      const passwordConfirm = String(oneClickPasswordConfirmInput?.value || "");
       const oneClickId = createOneClickAccountId();
       const promoCode = normalizeCode(promoCodeInput?.value || "");
 
@@ -968,6 +1061,10 @@ function bindPage1Events() {
       }
       if (!isValidPassword(password)) {
         if (oneClickErrorEl) oneClickErrorEl.textContent = "Mot de passe invalide (minimum 6 caractères).";
+        return;
+      }
+      if (password !== passwordConfirm) {
+        if (oneClickErrorEl) oneClickErrorEl.textContent = "Le mot de passe de confirmation ne correspond pas.";
         return;
       }
 
@@ -1030,6 +1127,7 @@ function bindPage1Events() {
 }
 
 renderAuthLoading();
+showGlobalLoading("Préparation de la connexion...");
 pageAuthDebug("bootstrap:renderAuthLoadingDone");
 authBootstrapReady = true;
 pageAuthDebug("bootstrap:noGoogle:ready");
@@ -1041,6 +1139,7 @@ if (auth.currentUser) {
     });
   });
 } else {
+  hideGlobalLoading();
   renderPage1();
 }
 
@@ -1123,6 +1222,7 @@ watchAuthState((user) => {
   }
   redirectingToApp = false;
   pageAuthDebug("watchAuthState:noUser");
+  hideGlobalLoading();
   if (authBootstrapReady !== true) return;
   scheduleAuthFallbackRender();
 });

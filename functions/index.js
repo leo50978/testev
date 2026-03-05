@@ -36,6 +36,7 @@ const AMBASSADOR_LOSS_BONUS = 50;
 const AMBASSADOR_WIN_PENALTY = 75;
 const AMBASSADOR_PROMO_PREFIX = "AMB";
 const AMBASSADOR_LINK_PREFIX = "AML";
+const AMBASSADOR_SYSTEM_ENABLED = false;
 const AUTH_HASH_ALGO = "scrypt_v1";
 const AUTH_HASH_SALT_BYTES = 16;
 const AUTH_HASH_KEYLEN = 64;
@@ -504,7 +505,7 @@ async function applyUserReferralAttribution(options = {}) {
     const referralSnap = await tx.get(referralRef);
     const referrerData = latestReferrerSnap.data() || {};
     const referralData = referralSnap.exists ? (referralSnap.data() || {}) : {};
-    const ambassadorContext = deriveRootAmbassadorContext(referrerData);
+    const ambassadorContext = AMBASSADOR_SYSTEM_ENABLED ? deriveRootAmbassadorContext(referrerData) : null;
     let ambassadorSnap = null;
     let ambassadorReferralSnap = null;
     let ambassadorRef = null;
@@ -598,6 +599,9 @@ async function applyUserReferralAttribution(options = {}) {
 }
 
 async function applyAmbassadorReferralAttribution(options = {}) {
+  if (!AMBASSADOR_SYSTEM_ENABLED) {
+    return { applied: false, reason: "ambassador_disabled" };
+  }
   const uid = String(options.uid || "").trim();
   const email = sanitizeEmail(options.email || "", 160);
   const promoCode = normalizeCode(options.promoCode || "");
@@ -692,11 +696,18 @@ async function applyPromoAttribution(options = {}) {
     return applyUserReferralAttribution(options);
   }
   if (promoCode.startsWith(AMBASSADOR_PROMO_PREFIX) || promoCode.startsWith(AMBASSADOR_LINK_PREFIX)) {
+    if (!AMBASSADOR_SYSTEM_ENABLED) {
+      return { applied: false, reason: "ambassador_disabled" };
+    }
     return applyAmbassadorReferralAttribution(options);
   }
 
   const userAttempt = await applyUserReferralAttribution(options);
   if (userAttempt.applied) return userAttempt;
+
+  if (!AMBASSADOR_SYSTEM_ENABLED) {
+    return userAttempt;
+  }
 
   const ambassadorAttempt = await applyAmbassadorReferralAttribution(options);
   if (ambassadorAttempt.applied) return ambassadorAttempt;
@@ -721,9 +732,19 @@ function assertAuth(request) {
   return { uid, email };
 }
 
+function hasFinanceAdminClaim(request) {
+  return request?.auth?.token?.admin === true
+    || request?.auth?.token?.financeAdmin === true;
+}
+
+function hasFinanceAdminEmail(request) {
+  const email = String(request?.auth?.token?.email || "").trim().toLowerCase();
+  return !!email && email === FINANCE_ADMIN_EMAIL;
+}
+
 function assertFinanceAdmin(request) {
   const authData = assertAuth(request);
-  if (String(authData.email || "").trim().toLowerCase() !== FINANCE_ADMIN_EMAIL) {
+  if (!hasFinanceAdminClaim(request) && !hasFinanceAdminEmail(request)) {
     throw new HttpsError("permission-denied", "Accès administrateur requis.");
   }
   return authData;
@@ -1652,6 +1673,7 @@ function buildRoomUpdateFromGameState(room, nextState, records = []) {
     playedCount: safeInt(room.playedCount) + playedCountDelta,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     turnLockedUntilMs: 0,
+    deckOrder: admin.firestore.FieldValue.delete(),
   };
 
   if (lastRecord) {
@@ -1822,6 +1844,36 @@ async function applyWalletMutationTx(tx, options) {
   let afterTotalExchangedEver = beforeTotalExchangedEver;
 
   if (type === "xchange_buy") {
+    const [ordersSnap, withdrawalsSnap] = await Promise.all([
+      tx.get(
+        db.collection(CLIENTS_COLLECTION)
+          .doc(uid)
+          .collection("orders")
+          .where("status", "==", "approved")
+      ),
+      tx.get(
+        db.collection(CLIENTS_COLLECTION)
+          .doc(uid)
+          .collection("withdrawals")
+      ),
+    ]);
+
+    const approvedDeposits = ordersSnap.docs.reduce(
+      (sum, item) => sum + safeInt(item.data()?.amount),
+      0
+    );
+    const reservedWithdrawals = withdrawalsSnap.docs.reduce((sum, item) => {
+      const withdrawal = item.data() || {};
+      if (withdrawal.status === "rejected") return sum;
+      return sum + safeInt(withdrawal.requestedAmount ?? withdrawal.amount);
+    }, 0);
+    const baseBalanceHtg = Math.max(0, approvedDeposits - reservedWithdrawals);
+    const availableToConvertHtg = Math.max(0, baseBalanceHtg - beforeExchanged);
+
+    if (amountGourdes <= 0 || amountGourdes > availableToConvertHtg) {
+      throw new HttpsError("failed-precondition", "Montant supérieur au solde HTG disponible.");
+    }
+
     afterTotalExchangedEver = beforeTotalExchangedEver + amountGourdes;
     afterPendingFromXchange = beforePendingFromXchange + amountDoes;
   }
@@ -2227,7 +2279,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
           updates.status = finalState.winnerSeat >= 0 ? "ended" : "playing";
           updates.startedAt = admin.firestore.FieldValue.serverTimestamp();
           updates.startedAtMs = Date.now();
-          updates.deckOrder = deckOrder;
+          updates.deckOrder = admin.firestore.FieldValue.delete();
           updates.endClicks = {};
           Object.assign(updates, buildRoomUpdateFromGameState(roomAtStart, finalState, batchResult.records));
           if (finalState.winnerSeat < 0) {
@@ -2294,7 +2346,6 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
       endedAtMs: 0,
       turnLockedUntilMs: 0,
       nextActionSeq: 0,
-      deckOrder: [],
       gameMode: "domino-ffa",
       engineVersion: 2,
       stakeDoes,
@@ -2380,7 +2431,7 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
       botDifficulty: configuredBotDifficulty,
       startedAt: admin.firestore.FieldValue.serverTimestamp(),
       startedAtMs: Date.now(),
-      deckOrder,
+      deckOrder: admin.firestore.FieldValue.delete(),
       turnLockedUntilMs: 0,
       endClicks: {},
       playerEmails: admin.firestore.FieldValue.delete(),
@@ -2871,6 +2922,15 @@ exports.claimWinReward = publicOnCall("claimWinReward", async (request) => {
 
 exports.recordAmbassadorOutcome = publicOnCall("recordAmbassadorOutcome", async (request) => {
   const { uid } = assertAuth(request);
+  if (!AMBASSADOR_SYSTEM_ENABLED) {
+    return {
+      applied: false,
+      changed: 0,
+      skipped: 0,
+      reason: "ambassador_disabled",
+      results: [],
+    };
+  }
   const payload = request.data && typeof request.data === "object" ? request.data : {};
   const roomId = String(payload.roomId || "").trim();
 
@@ -3438,7 +3498,7 @@ exports.getPublicGameStakeOptionsSecure = publicOnCall("getPublicGameStakeOption
   };
 });
 
-exports.getPublicRuntimeConfigSecure = onCall(async () => {
+exports.getPublicRuntimeConfigSecure = publicOnCall("getPublicRuntimeConfigSecure", async () => {
   const settings = await getSettingsSnapshotData();
   return {
     appCheckSiteKey: String(settings.appCheckSiteKey || ""),
@@ -3446,7 +3506,7 @@ exports.getPublicRuntimeConfigSecure = onCall(async () => {
   };
 });
 
-exports.getDpaymentBootstrapConfig = onCall(async () => {
+exports.getDpaymentBootstrapConfig = publicOnCall("getDpaymentBootstrapConfig", async () => {
   const snap = await adminBootstrapRef().get();
   if (!snap.exists) {
     return {
@@ -3465,7 +3525,7 @@ exports.getDpaymentBootstrapConfig = onCall(async () => {
   };
 });
 
-exports.getGlobalAnalyticsSnapshot = onCall(async (request) => {
+exports.getGlobalAnalyticsSnapshot = publicOnCall("getGlobalAnalyticsSnapshot", async (request) => {
   assertFinanceAdmin(request);
   const botDifficulty = await getConfiguredBotDifficulty();
   const [
@@ -3932,7 +3992,7 @@ exports.markSupportThreadSeenSecure = publicOnCall("markSupportThreadSeenSecure"
   };
 });
 
-exports.adminCheck = onCall(async (request) => {
+exports.adminCheck = publicOnCall("adminCheck", async (request) => {
   const { uid, email } = assertFinanceAdmin(request);
   return {
     ok: true,
@@ -3942,7 +4002,7 @@ exports.adminCheck = onCall(async (request) => {
   };
 });
 
-exports.setBotDifficulty = onCall(async (request) => {
+exports.setBotDifficulty = publicOnCall("setBotDifficulty", async (request) => {
   assertFinanceAdmin(request);
   const payload = request.data && typeof request.data === "object" ? request.data : {};
   const botDifficulty = normalizeBotDifficulty(payload.botDifficulty);
@@ -3959,7 +4019,10 @@ exports.setBotDifficulty = onCall(async (request) => {
   };
 });
 
-exports.createAmbassadorSecure = onCall(async (request) => {
+exports.createAmbassadorSecure = publicOnCall("createAmbassadorSecure", async (request) => {
+  if (!AMBASSADOR_SYSTEM_ENABLED) {
+    throw new HttpsError("failed-precondition", "Système ambassadeur désactivé.");
+  }
   const { uid, email } = assertFinanceAdmin(request);
   const payload = request.data && typeof request.data === "object" ? request.data : {};
 
@@ -4034,7 +4097,10 @@ exports.createAmbassadorSecure = onCall(async (request) => {
   };
 });
 
-exports.ambassadorLoginSecure = onCall(async (request) => {
+exports.ambassadorLoginSecure = publicOnCall("ambassadorLoginSecure", async (request) => {
+  if (!AMBASSADOR_SYSTEM_ENABLED) {
+    return { ok: false, reason: "disabled" };
+  }
   const payload = request.data && typeof request.data === "object" ? request.data : {};
   const code = normalizeCode(payload.promoCode || payload.code || "");
   const authCode = String(payload.authCode || "").trim();
@@ -4104,7 +4170,7 @@ exports.ambassadorLoginSecure = onCall(async (request) => {
   };
 });
 
-exports.migrateAmbassadorSecrets = onCall(async (request) => {
+exports.migrateAmbassadorSecrets = publicOnCall("migrateAmbassadorSecrets", async (request) => {
   assertFinanceAdmin(request);
   const snap = await db.collection(AMBASSADORS_COLLECTION).get();
 

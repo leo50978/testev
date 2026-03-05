@@ -442,8 +442,10 @@ ObjetoCanvas.prototype.EventoRedimensionar = function() {
         this.Cabecera.removeAttribute("forzarlandscape");
         this.Cabecera.removeAttribute("style");
         if (this.OpcionesCanvas['Entorno'] === 'Normal') {
-            this.Cabecera.style.width  = "100%";
-            this.Cabecera.style.height = "100%";
+            var viewportWidth = Math.max(window.innerWidth || 0, document.documentElement.clientWidth || 0, 1);
+            var viewportHeight = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, 1);
+            this.Cabecera.style.width  = viewportWidth + "px";
+            this.Cabecera.style.height = viewportHeight + "px";
             this.Cabecera.style.left = "0";
             this.Cabecera.style.top  = "0";
         }

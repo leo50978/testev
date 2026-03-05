@@ -31,6 +31,9 @@ const DEFAULT_ENTRY_COST_DOES = 100;
 const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
 const ONLINE_USERS_MIN = 30000;
 const ONLINE_USERS_MAX = 100000;
+const ONLINE_USERS_STEP_MS = 30000;
+const ONLINE_USERS_WAVE_PERIOD = 29;
+const ONLINE_USERS_SEED = 0x9e3779b9;
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const SHOULD_AUTOSTART = URL_PARAMS.get("autostart") === "1";
 
@@ -98,8 +101,8 @@ let resumePromise = null;
 let autostartTried = false;
 let resumeDeclined = false;
 let pendingStartAfterRotate = false;
-let onlineUsersValue = ONLINE_USERS_MIN;
 let onlineUsersTick = null;
+let onlineUsersBucket = -1;
 let fullscreenHintTimer = null;
 let howToPlayPromptPromise = null;
 
@@ -276,12 +279,6 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function randomIntInclusive(min, max) {
-  const low = Math.ceil(min);
-  const high = Math.floor(max);
-  return Math.floor(Math.random() * (high - low + 1)) + low;
-}
-
 function formatOnlineUsers(value) {
   return Number(value || 0).toLocaleString("fr-FR").replace(/\u202f/g, " ");
 }
@@ -292,6 +289,26 @@ function setOnlineUsersHud(value) {
   hud.textContent = `Utilisateurs en ligne: ${formatOnlineUsers(value)}`;
 }
 
+function hashUnitInterval(seed) {
+  let x = (seed ^ ONLINE_USERS_SEED) >>> 0;
+  x ^= x >>> 16;
+  x = Math.imul(x, 0x7feb352d);
+  x ^= x >>> 15;
+  x = Math.imul(x, 0x846ca68b);
+  x ^= x >>> 16;
+  return (x >>> 0) / 0xffffffff;
+}
+
+function computeSharedOnlineUsers(ms = Date.now()) {
+  const range = ONLINE_USERS_MAX - ONLINE_USERS_MIN;
+  const bucket = Math.floor(ms / ONLINE_USERS_STEP_MS);
+  const wave = (Math.sin(bucket / ONLINE_USERS_WAVE_PERIOD) + 1) / 2;
+  const noise = hashUnitInterval(bucket);
+  const ratio = clampNumber((wave * 0.68) + (noise * 0.32), 0, 1);
+  const value = ONLINE_USERS_MIN + Math.round(range * ratio);
+  return clampNumber(value, ONLINE_USERS_MIN, ONLINE_USERS_MAX);
+}
+
 function startOnlineUsersTicker() {
   const hud = document.getElementById("OnlineUsersHud");
   if (!hud) return;
@@ -300,17 +317,18 @@ function startOnlineUsersTicker() {
     clearInterval(onlineUsersTick);
     onlineUsersTick = null;
   }
-
-  onlineUsersValue = randomIntInclusive(ONLINE_USERS_MIN, ONLINE_USERS_MAX);
-  setOnlineUsersHud(onlineUsersValue);
-
+  onlineUsersBucket = -1;
+  const refreshHud = () => {
+    const now = Date.now();
+    const nextBucket = Math.floor(now / ONLINE_USERS_STEP_MS);
+    if (nextBucket === onlineUsersBucket) return;
+    onlineUsersBucket = nextBucket;
+    setOnlineUsersHud(computeSharedOnlineUsers(now));
+  };
+  refreshHud();
   onlineUsersTick = setInterval(() => {
-    const amplitude = Math.max(15, Math.floor(onlineUsersValue * 0.0015));
-    let delta = randomIntInclusive(-amplitude, amplitude);
-    if (delta === 0) delta = Math.random() < 0.5 ? -1 : 1;
-    onlineUsersValue = clampNumber(onlineUsersValue + delta, ONLINE_USERS_MIN, ONLINE_USERS_MAX);
-    setOnlineUsersHud(onlineUsersValue);
-  }, 1100);
+    refreshHud();
+  }, 1000);
 }
 
 function fullscreenElement() {
@@ -343,6 +361,20 @@ function isFullscreenSupported() {
     typeof document.exitFullscreen === "function" ||
     typeof document.webkitExitFullscreen === "function" ||
     typeof document.msExitFullscreen === "function"
+  );
+}
+
+function isIOSDevice() {
+  const ua = String(navigator?.userAgent || "");
+  const iOSUA = /iPad|iPhone|iPod/i.test(ua);
+  const iPadOS = navigator?.platform === "MacIntel" && ((navigator?.maxTouchPoints || 0) > 1);
+  return iOSUA || iPadOS;
+}
+
+function isStandaloneDisplayMode() {
+  return Boolean(
+    window.matchMedia?.("(display-mode: standalone)")?.matches ||
+    navigator?.standalone === true
   );
 }
 
@@ -390,6 +422,10 @@ function syncFullscreenButtonState() {
 
 async function toggleFullscreen() {
   if (!isFullscreenSupported()) {
+    if (isIOSDevice() && !isStandaloneDisplayMode()) {
+      setFullscreenHint("Safari iPhone ne supporte pas ce plein ecran. Ajoute le site a l'ecran d'accueil pour un mode plein ecran.");
+      return;
+    }
     setFullscreenHint("Plein ecran non supporte sur cet appareil.");
     return;
   }
@@ -902,8 +938,52 @@ async function endGameClick() {
     setStatus("Aucune salle active.");
     return "no_room";
   }
-  await leaveRoom();
-  return "left";
+  const targetRoomId = String(roomId || "");
+
+  try {
+    await finalizeGameSecure({ roomId: targetRoomId });
+  } catch (err) {
+    debugMatch("endGameClick:finalizeBestEffortError", {
+      targetRoomId,
+      code: err?.code || "unknown",
+      message: err?.message || String(err),
+    });
+  }
+
+  const maxAttempts = 7;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const leaveResult = await leaveRoom({
+      roomId: targetRoomId,
+      strict: true,
+      forceResetOnError: false,
+      silentStatusOnSuccess: true,
+    });
+    if (leaveResult?.left === true || leaveResult?.state === "no_room") {
+      setStatus("Salle quittée.");
+      return "left";
+    }
+
+    const code = String(leaveResult?.errorCode || "");
+    const canRetry = code === "failed-precondition";
+    debugMatch("endGameClick:leaveRetry", {
+      targetRoomId,
+      attempt,
+      maxAttempts,
+      code,
+      canRetry,
+    });
+    if (!canRetry || attempt >= maxAttempts) break;
+
+    try {
+      await finalizeGameSecure({ roomId: targetRoomId });
+    } catch (_) {
+      // Best effort only; leaveRoom retry remains the source of truth.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350 + (attempt * 200)));
+  }
+
+  setStatus("Impossible de quitter la salle pour le moment. Réessaie.");
+  return "error";
 }
 
 async function handleEndedRoom(roomData) {
@@ -1424,32 +1504,75 @@ async function resumeSession() {
 }
 
 async function leaveRoomById(targetRoomId, user) {
-  await leaveRoomSecure({ roomId: targetRoomId });
+  const response = await leaveRoomSecure({ roomId: targetRoomId });
   clearActionCache(targetRoomId);
+  return response && typeof response === "object" ? response : { ok: true };
 }
 
-async function leaveRoom() {
+async function leaveRoom(options = {}) {
+  const explicitRoomId = String(options?.roomId || "").trim();
+  const targetRoomId = explicitRoomId || String(roomId || "").trim();
+  const forceResetOnError = options?.forceResetOnError !== false;
+  const strict = options?.strict === true;
+  const silentStatusOnSuccess = options?.silentStatusOnSuccess === true;
   const user = auth.currentUser;
-  if (!user || !roomId) {
-    resetSessionState();
-    setStatus("Aucune salle active.");
-    if (window.UI) window.UI.MostrarEmpezar();
-    return;
+  if (!user || !targetRoomId) {
+    if (forceResetOnError) {
+      resetSessionState();
+      if (window.UI) window.UI.MostrarEmpezar();
+      setStatus("Aucune salle active.");
+    }
+    return {
+      ok: true,
+      left: true,
+      state: "no_room",
+    };
   }
 
-  const leavingRoomId = roomId;
+  const leavingRoomId = targetRoomId;
+  let leaveResponse = null;
+  let leaveError = null;
 
   try {
-    await leaveRoomById(leavingRoomId, user);
+    leaveResponse = await leaveRoomById(leavingRoomId, user);
   } catch (err) {
+    leaveError = err;
     logFirestoreError("leaveRoom", err);
+    if (strict) {
+      return {
+        ok: false,
+        left: false,
+        state: "error",
+        errorCode: err?.code || "unknown",
+        errorMessage: err?.message || String(err),
+      };
+    }
   } finally {
-    clearActionCache(leavingRoomId);
-    resetSessionState();
-    setMatchLoading(false);
-    if (window.UI) window.UI.MostrarEmpezar();
-    setStatus("Salle quittée.");
+    if (!leaveError || forceResetOnError) {
+      clearActionCache(leavingRoomId);
+      resetSessionState();
+      setMatchLoading(false);
+      if (window.UI) window.UI.MostrarEmpezar();
+      if (!silentStatusOnSuccess) setStatus("Salle quittée.");
+    }
   }
+
+  if (leaveError) {
+    return {
+      ok: false,
+      left: false,
+      state: "error",
+      errorCode: leaveError?.code || "unknown",
+      errorMessage: leaveError?.message || String(leaveError),
+    };
+  }
+
+  return {
+    ok: true,
+    left: true,
+    state: String(leaveResponse?.status || "left"),
+    deleted: leaveResponse?.deleted === true,
+  };
 }
 
 async function startGameFlow() {

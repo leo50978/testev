@@ -11,8 +11,14 @@ service cloud.firestore {
 
     function isFinanceAdmin() {
       return signedIn()
-        && request.auth.token.email != null
-        && request.auth.token.email == "leovitch2004@gmail.com";
+        && (
+          request.auth.token.admin == true
+          || request.auth.token.financeAdmin == true
+          || (
+            request.auth.token.email != null
+            && request.auth.token.email == "leovitch2004@gmail.com"
+          )
+        );
     }
 
     function roomDoc(roomId) {
@@ -141,7 +147,7 @@ service cloud.firestore {
     }
 
     match /ambassadors/{ambassadorId} {
-      allow read: if true;
+      allow read: if isFinanceAdmin();
       allow write: if isFinanceAdmin();
 
       match /private/{docId} {
@@ -149,7 +155,7 @@ service cloud.firestore {
       }
 
       match /referrals/{referralId} {
-        allow read: if true;
+        allow read: if isFinanceAdmin();
         allow write: if isFinanceAdmin();
       }
     }

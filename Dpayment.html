@@ -1229,6 +1229,7 @@
     const SETTINGS = "settings";
     const XCHANGES = "xchanges";
     const AMBASSADORS = "ambassadors";
+    const AMBASSADOR_SYSTEM_ENABLED = false;
     const USER_REFERRAL_DEPOSIT_REWARD = 100;
     const APP_PUBLIC_SETTINGS_DOC = 'public_app_settings';
     const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
@@ -1608,7 +1609,9 @@
         }
 
         const referrerUid = String(clientData.referredByUserId || fallbackReferrerUid || '').trim();
-        const ambassadorId = String(clientData.rootAmbassadorId || clientData.referredByAmbassadorId || '').trim();
+        const ambassadorId = AMBASSADOR_SYSTEM_ENABLED
+          ? String(clientData.rootAmbassadorId || clientData.referredByAmbassadorId || '').trim()
+          : '';
         const depositAmountHtg = safeInt(approvedAmountHtg);
         const rewardDoes = computeReferralRewardDoes(depositAmountHtg);
         const clientCreatedMs = tsToMs(clientData.createdAt) || safeSignedInt(clientData.createdAtMs);
