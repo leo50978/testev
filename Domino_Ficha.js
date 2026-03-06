@@ -207,6 +207,21 @@ var Domino_Ficha = function() {
     
     this.Colocar = function(FichaOrigen, Jugador1, Instantaneo, RamaForzada) {
         var Ret = { PosX : 0, PosZ : -2, RotZ : 0 };
+        try {
+            var PayloadBegin = {
+                ts: new Date().toISOString(),
+                valores: this.Valores.slice(0),
+                jugador1: (Jugador1 === true),
+                instantaneo: (Instantaneo === true),
+                ramaForzada: RamaForzada || "",
+                fichaOrigenRama: (FichaOrigen && typeof(FichaOrigen) === "object" && FichaOrigen.Rama) ? FichaOrigen.Rama : ((FichaOrigen === false) ? "centro" : ""),
+                turnoActual: Domino.Partida.TurnoActual,
+                jugadorActual: Domino.Partida.JugadorActual,
+                siguienteAccionSeq: Domino.Partida.SiguienteAccionSeq
+            };
+            console.log("[DOMINO_FICHA_DEBUG] Colocar:begin " + JSON.stringify(PayloadBegin), PayloadBegin);
+        } catch (_) {
+        }
         // Es la primera ficha (6 doble)
         if (FichaOrigen === false) {
             this.Direccion = "centro";
@@ -375,6 +390,20 @@ var Domino_Ficha = function() {
         }
         
         var Retraso = (typeof(Jugador1) === "undefined") ? 400 : 0;
+        try {
+            var PayloadAnim = {
+                ts: new Date().toISOString(),
+                valores: this.Valores.slice(0),
+                rama: this.Rama,
+                direccion: this.Direccion,
+                retraso: Retraso,
+                posX: Ret.PosX,
+                posZ: Ret.PosZ,
+                rotZ: Ret.RotZ
+            };
+            console.log("[DOMINO_FICHA_DEBUG] Colocar:animateStart " + JSON.stringify(PayloadAnim), PayloadAnim);
+        } catch (_) {
+        }
         
         this.AniColocar = Animaciones.CrearAnimacion([
                 { Paso : { Escala : this.Escala,    x : this.Ficha.position.x,  z : this.Ficha.position.z,  rx : this.Ficha.rotation.x, rz : this.Ficha.rotation.z  } },

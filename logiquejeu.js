@@ -15,6 +15,7 @@ import { getXchangeState, ensureXchangeState } from "./xchange.js";
 import {
   joinMatchmakingSecure,
   ensureRoomReadySecure,
+  ackRoomStartSeenSecure,
   leaveRoomSecure,
   finalizeGameSecure,
   claimWinRewardSecure,
@@ -25,6 +26,7 @@ const ROOMS = "rooms";
 const WAIT_MS = 15 * 1000;
 const TURN_LIMIT_MS = 30 * 1000;
 const ACTION_CACHE_PREFIX = "domino_actions_";
+const ROOM_DECK_CACHE_PREFIX = "domino_deck_";
 const ROOM_SETTLEMENT_PREFIX = "domino_settle_";
 const HOW_TO_PLAY_STORAGE_KEY = "domino_how_to_play_seen_v1";
 const DEFAULT_ENTRY_COST_DOES = 100;
@@ -105,9 +107,78 @@ let onlineUsersTick = null;
 let onlineUsersBucket = -1;
 let fullscreenHintTimer = null;
 let howToPlayPromptPromise = null;
+let roomActionsReadyId = "";
+let lastRoomSnapshotData = null;
+let finalizeGameTimer = null;
+let finalizeGameTargetRoomId = "";
+let launchRetryTimer = null;
+let rehydrationRetryTimer = null;
+let startRevealAckInFlightId = "";
+let startRevealAckDoneId = "";
 
 function makeClientActionId() {
   return `act_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function clearRoomActionsReady(targetRoomId = "") {
+  roomActionsReadyId = "";
+}
+
+function markRoomActionsReady(targetRoomId) {
+  roomActionsReadyId = String(targetRoomId || "");
+}
+
+function areRoomActionsReady(targetRoomId) {
+  return roomActionsReadyId !== "" && roomActionsReadyId === String(targetRoomId || "");
+}
+
+function normalizeDeckOrder(raw) {
+  if (!Array.isArray(raw) || raw.length !== 28) return [];
+  const seen = new Set();
+  const out = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const tileId = Number(raw[i]);
+    if (!Number.isFinite(tileId) || tileId < 0 || tileId >= 28 || seen.has(tileId)) {
+      return [];
+    }
+    seen.add(tileId);
+    out.push(Math.trunc(tileId));
+  }
+  return out;
+}
+
+function roomDeckCacheKey(id) {
+  return `${ROOM_DECK_CACHE_PREFIX}${String(id || "").trim()}`;
+}
+
+function readRoomDeckOrder(id) {
+  const safeId = String(id || "").trim();
+  if (!safeId) return [];
+  try {
+    const raw = localStorage.getItem(roomDeckCacheKey(safeId));
+    if (!raw) return [];
+    return normalizeDeckOrder(JSON.parse(raw));
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeRoomDeckOrder(id, rawDeckOrder) {
+  const safeId = String(id || "").trim();
+  const deckOrder = normalizeDeckOrder(rawDeckOrder);
+  if (!safeId || deckOrder.length !== 28) return [];
+  try {
+    localStorage.setItem(roomDeckCacheKey(safeId), JSON.stringify(deckOrder));
+  } catch (_) {}
+  return deckOrder;
+}
+
+function clearRoomDeckOrder(id) {
+  const safeId = String(id || "").trim();
+  if (!safeId) return;
+  try {
+    localStorage.removeItem(roomDeckCacheKey(safeId));
+  } catch (_) {}
 }
 
 function setMatchLoading(visible, text) {
@@ -637,6 +708,54 @@ function clearTurnTimer() {
   }
 }
 
+function clearFinalizeGameTimer() {
+  if (finalizeGameTimer) {
+    clearTimeout(finalizeGameTimer);
+    finalizeGameTimer = null;
+  }
+  finalizeGameTargetRoomId = "";
+}
+
+function clearRehydrationRetryTimer() {
+  if (rehydrationRetryTimer) {
+    clearTimeout(rehydrationRetryTimer);
+    rehydrationRetryTimer = null;
+  }
+}
+
+function clearLaunchRetryTimer() {
+  if (launchRetryTimer) {
+    clearTimeout(launchRetryTimer);
+    launchRetryTimer = null;
+  }
+}
+
+function isDominoEngineReady() {
+  const partida = window.Domino && window.Domino.Partida ? window.Domino.Partida : null;
+  return !!(
+    window.Domino &&
+    window.Domino.Escena &&
+    partida &&
+    typeof partida.Empezar === "function" &&
+    window.UI &&
+    typeof window.UI.MostrarEmpezar === "function"
+  );
+}
+
+function scheduleLaunchRetry(roomData = null) {
+  if (launchRetryTimer) return;
+  if (roomData) {
+    lastRoomSnapshotData = roomData;
+  }
+  launchRetryTimer = setTimeout(() => {
+    launchRetryTimer = null;
+    const liveRoomData = lastRoomSnapshotData || null;
+    if (!roomId || !liveRoomData) return;
+    if (String(liveRoomData.status || "") !== "playing") return;
+    launchLocalGame(liveRoomData);
+  }, 120);
+}
+
 function setTurnTimerUI(remainingSec, currentPlayer) {
   const S = window.GameSession || null;
   const localSeat = (S && typeof S.seatIndex === "number") ? S.seatIndex : -1;
@@ -692,6 +811,12 @@ function clearSubs() {
   if (actionsUnsub) actionsUnsub();
   roomUnsub = null;
   actionsUnsub = null;
+  clearLaunchRetryTimer();
+  clearRehydrationRetryTimer();
+  clearRoomActionsReady(roomId);
+  startRevealAckInFlightId = "";
+  startRevealAckDoneId = "";
+  lastRoomSnapshotData = null;
   clearTurnTimer();
   gameLaunched = false;
 }
@@ -707,6 +832,7 @@ function clearActionCache(id) {
   } catch (e) {
     console.warn("[CACHE] clearActionCache error", e);
   }
+  clearRoomDeckOrder(id);
 }
 
 function readActionCache(id) {
@@ -772,6 +898,9 @@ function applyCachedActionsInstant(id) {
 function resetSessionState() {
   clearTimer();
   clearSubs();
+  clearFinalizeGameTimer();
+  clearLaunchRetryTimer();
+  clearRehydrationRetryTimer();
   setMatchLoading(false);
   roomId = null;
   seatIndex = -1;
@@ -780,6 +909,64 @@ function resetSessionState() {
   window.GameSession = null;
   setLeaveRoomButtonVisible(false);
   updateOrientationGuard();
+}
+
+function scheduleRehydrationRetry(targetRoomId, retryFn, reason, data = {}) {
+  if (rehydrationRetryTimer) return;
+  rehydrationRetryTimer = setTimeout(() => {
+    rehydrationRetryTimer = null;
+    if (!roomId || String(roomId) !== String(targetRoomId || "")) return;
+    const partida = window.Domino && window.Domino.Partida ? window.Domino.Partida : null;
+    if (!partida || partida.ModoRehidratacion !== true) return;
+    debugMatch(reason || "rehydration:retryTick", data);
+    retryFn();
+  }, 90);
+}
+
+async function ackRoomStartSeen(targetRoomId, reason = "") {
+  const safeRoomId = String(targetRoomId || "").trim();
+  if (!safeRoomId) return null;
+  if (!auth.currentUser) return null;
+  if (!lastRoomSnapshotData || String(lastRoomSnapshotData.status || "") !== "playing") return null;
+  if (lastRoomSnapshotData.startRevealPending !== true) return null;
+  if (startRevealAckDoneId === safeRoomId || startRevealAckInFlightId === safeRoomId) return null;
+
+  startRevealAckInFlightId = safeRoomId;
+  debugMatch("startReveal:ackSend", {
+    targetRoomId: safeRoomId,
+    reason,
+    roomLastActionSeq: lastRoomSnapshotData.lastActionSeq,
+  });
+  try {
+    const result = await ackRoomStartSeenSecure({ roomId: safeRoomId });
+    if (safeRoomId === roomId && window.GameSession && window.GameSession.roomId === safeRoomId) {
+      window.GameSession.startRevealPending = result?.pending === true;
+    }
+    if (result?.pending !== true) {
+      startRevealAckDoneId = safeRoomId;
+    }
+    debugMatch("startReveal:ackResult", {
+      targetRoomId: safeRoomId,
+      reason,
+      pending: result?.pending === true,
+      released: result?.released === true,
+      ackCount: result?.ackCount,
+      humanCount: result?.humanCount,
+    });
+    return result;
+  } catch (err) {
+    debugMatch("startReveal:ackError", {
+      targetRoomId: safeRoomId,
+      reason,
+      code: err?.code || "unknown",
+      message: err?.message || String(err),
+    });
+    throw err;
+  } finally {
+    if (startRevealAckInFlightId === safeRoomId) {
+      startRevealAckInFlightId = "";
+    }
+  }
 }
 
 function maybeNudgeServerForBotTurn(id, roomData) {
@@ -919,7 +1106,22 @@ async function findActiveRoomForUser(uid) {
 async function startRoomIfNeeded(id) {
   debugMatch("startRoomIfNeeded:begin", { targetRoomId: id });
   try {
-    await ensureRoomReadySecure({ roomId: id });
+    const result = await ensureRoomReadySecure({ roomId: id });
+    if (Array.isArray(result?.privateDeckOrder) && result.privateDeckOrder.length === 28) {
+      const deckOrder = writeRoomDeckOrder(id, result.privateDeckOrder);
+      if (
+        id === roomId &&
+        window.GameSession &&
+        String(window.GameSession.roomId || "") === String(id)
+      ) {
+        window.GameSession.deckOrder = deckOrder.slice(0, 28);
+      }
+      debugMatch("startRoomIfNeeded:deckOrderReady", {
+        targetRoomId: id,
+        deckOrderLength: deckOrder.length,
+        status: result?.status || "",
+      });
+    }
     debugMatch("startRoomIfNeeded:success", { targetRoomId: id });
   } catch (err) {
     debugMatch("startRoomIfNeeded:error", {
@@ -939,6 +1141,14 @@ async function endGameClick() {
     return "no_room";
   }
   const targetRoomId = String(roomId || "");
+  if (String(lastRoomSnapshotData?.status || "") !== "ended") {
+    setStatus("La partie se finalise encore. Réessaie dans un instant.");
+    debugMatch("endGameClick:notEndedYet", {
+      targetRoomId,
+      status: String(lastRoomSnapshotData?.status || ""),
+    });
+    return "error";
+  }
 
   try {
     await finalizeGameSecure({ roomId: targetRoomId });
@@ -1028,15 +1238,34 @@ async function onGameEnded(winnerSeat) {
   const currentRoomId = roomId;
   const isHost = !!(window.GameSession && window.GameSession.isHost === true);
   if (!isHost) return;
+  if (!areRoomActionsReady(currentRoomId)) return;
+  if (String(lastRoomSnapshotData?.status || "") === "ended") return;
 
-  try {
-    await finalizeGameSecure({
-      roomId: currentRoomId,
-    });
-    setStatus("Partie terminée. Clique sur Aller pour continuer.");
-  } catch (err) {
-    logFirestoreError("onGameEnded", err);
-  }
+  clearFinalizeGameTimer();
+  finalizeGameTargetRoomId = currentRoomId;
+  finalizeGameTimer = setTimeout(async () => {
+    finalizeGameTimer = null;
+    if (finalizeGameTargetRoomId !== currentRoomId) return;
+    if (roomId !== currentRoomId) return;
+    if (String(lastRoomSnapshotData?.status || "") === "ended") return;
+
+    try {
+      await finalizeGameSecure({
+        roomId: currentRoomId,
+      });
+      setStatus("Partie terminée. Clique sur Aller pour continuer.");
+    } catch (err) {
+      if (String(err?.code || "") !== "failed-precondition") {
+        logFirestoreError("onGameEnded", err);
+      } else {
+        debugMatch("onGameEnded:awaitServer", {
+          targetRoomId: currentRoomId,
+          winnerSeat,
+          message: err?.message || String(err),
+        });
+      }
+    }
+  }, 450);
 }
 
 async function pushAction(action) {
@@ -1071,7 +1300,20 @@ async function pushAction(action) {
 
 function syncGameSessionFromRoom(roomData) {
   if (!window.GameSession || !roomData) return;
+  const seats = roomData.seats && typeof roomData.seats === "object" ? roomData.seats : {};
+  const humanSeats = parseSeatsMap(seats);
+  const hostSeat = seats[roomData.ownerUid] !== undefined ? seats[roomData.ownerUid] : window.GameSession.hostSeat || 0;
   window.GameSession.status = roomData.status;
+  window.GameSession.hostSeat = hostSeat;
+  window.GameSession.isHost = window.GameSession.seatIndex === hostSeat;
+  window.GameSession.playerUids = Array.isArray(roomData.playerUids) ? roomData.playerUids.slice(0, 4) : window.GameSession.playerUids;
+  window.GameSession.playerNames = Array.isArray(roomData.playerNames)
+    ? roomData.playerNames.slice(0, 4)
+    : (Array.isArray(roomData.playerEmails) ? roomData.playerEmails.slice(0, 4) : window.GameSession.playerNames);
+  window.GameSession.humanSeats = humanSeats;
+  window.GameSession.humans = roomData.humanCount || humanSeats.length || 1;
+  window.GameSession.bots = typeof roomData.botCount === "number" ? roomData.botCount : window.GameSession.bots;
+  window.GameSession.startRevealPending = roomData.startRevealPending === true;
   window.GameSession.currentPlayer = typeof roomData.currentPlayer === "number" ? roomData.currentPlayer : window.GameSession.currentPlayer;
   window.GameSession.turnActual = typeof roomData.turnActual === "number" ? roomData.turnActual : window.GameSession.turnActual;
   window.GameSession.lastActionSeq = typeof roomData.lastActionSeq === "number" ? roomData.lastActionSeq : window.GameSession.lastActionSeq;
@@ -1079,18 +1321,39 @@ function syncGameSessionFromRoom(roomData) {
   window.GameSession.rewardAmountDoes = getCurrentRoomRewardDoes(roomData);
   debugMatch("syncGameSessionFromRoom", {
     status: roomData.status || "",
+    startRevealPending: roomData.startRevealPending === true,
     currentPlayer: roomData.currentPlayer,
     turnActual: roomData.turnActual,
     lastActionSeq: roomData.lastActionSeq,
     humanCount: roomData.humanCount,
     botCount: roomData.botCount,
+    humanSeats,
   });
+  if (window.Domino && window.Domino.Partida && typeof window.Domino.Partida.PrepararSesion === "function") {
+    window.Domino.Partida.PrepararSesion();
+  }
 }
 
 function scheduleTurnTimeout(id, roomData) {
   clearTurnTimer();
   if (!roomData || roomData.status !== "playing") return;
   if (typeof roomData.currentPlayer !== "number" || typeof roomData.turnActual !== "number") return;
+  if (roomData.startRevealPending === true) {
+    debugMatch("turnTimer:skipStartReveal", {
+      targetRoomId: id,
+      currentPlayer: roomData.currentPlayer,
+      turnActual: roomData.turnActual,
+    });
+    return;
+  }
+  if (!areRoomActionsReady(id)) {
+    debugMatch("turnTimer:skipBootstrap", {
+      targetRoomId: id,
+      currentPlayer: roomData.currentPlayer,
+      turnActual: roomData.turnActual,
+    });
+    return;
+  }
 
   const turnStartedMs = tsToMs(roomData.turnStartedAt);
   const elapsedMs = turnStartedMs > 0 ? Math.max(0, Date.now() - turnStartedMs) : 0;
@@ -1174,6 +1437,8 @@ function scheduleTurnTimeout(id, roomData) {
 
 function watchActions(id) {
   if (actionsUnsub) actionsUnsub();
+  clearRoomActionsReady(id);
+  clearRehydrationRetryTimer();
   const q = query(collection(db, ROOMS, id, "actions"), orderBy("seq", "asc"));
   let firstSnapshot = true;
 
@@ -1182,6 +1447,48 @@ function watchActions(id) {
     const session = window.GameSession || null;
     if (!partida || partida.ModoRehidratacion !== true) return;
     if (typeof partida.FinalizarRehidratacion !== "function") return;
+
+    const revealPending =
+      !!session &&
+      String(session.roomId || "") === String(id) &&
+      lastRoomSnapshotData &&
+      lastRoomSnapshotData.startRevealPending === true;
+
+    if (revealPending === true) {
+      const openingApplied = partida.TurnoActual >= 1 && partida.SiguienteAccionSeq >= 1;
+      const openingAnimationDone =
+        typeof partida.HayAnimacionColocarActiva === "function"
+          ? partida.HayAnimacionColocarActiva() === false
+          : true;
+
+      if (openingApplied !== true || openingAnimationDone !== true) {
+        debugMatch("rehydration:wait-startRevealOpening", {
+          localTurn: partida.TurnoActual,
+          localPlayer: partida.JugadorActual,
+          nextSeq: partida.SiguienteAccionSeq,
+          openingApplied,
+          openingAnimationDone,
+        });
+        scheduleRehydrationRetry(id, maybeFinishRehydration, "rehydration:retryStartRevealOpening", {
+          localTurn: partida.TurnoActual,
+          nextSeq: partida.SiguienteAccionSeq,
+          openingApplied,
+          openingAnimationDone,
+        });
+        return;
+      }
+
+      debugMatch("rehydration:finish-startReveal", {
+        localTurn: partida.TurnoActual,
+        localPlayer: partida.JugadorActual,
+        nextSeq: partida.SiguienteAccionSeq,
+      });
+      partida.FinalizarRehidratacion();
+      if (id === roomId) {
+        ackRoomStartSeen(id, "rehydration-start-reveal-finished").catch(() => {});
+      }
+      return;
+    }
 
     const expectedTurn = Number.isFinite(Number(session?.turnActual)) ? Math.trunc(Number(session.turnActual)) : 0;
     const expectedPlayer = Number.isFinite(Number(session?.currentPlayer)) ? Math.trunc(Number(session.currentPlayer)) : -1;
@@ -1196,12 +1503,20 @@ function watchActions(id) {
         localPlayer: partida.JugadorActual,
         expectedPlayer,
       });
+      scheduleRehydrationRetry(id, maybeFinishRehydration, "rehydration:retryWaitTurn", {
+        localTurn: partida.TurnoActual,
+        expectedTurn,
+      });
       return;
     }
     if (partida.TurnoActual === expectedTurn && expectedPlayer >= 0 && partida.JugadorActual !== expectedPlayer) {
       debugMatch("rehydration:wait-player", {
         localTurn: partida.TurnoActual,
         expectedTurn,
+        localPlayer: partida.JugadorActual,
+        expectedPlayer,
+      });
+      scheduleRehydrationRetry(id, maybeFinishRehydration, "rehydration:retryWaitPlayer", {
         localPlayer: partida.JugadorActual,
         expectedPlayer,
       });
@@ -1215,6 +1530,9 @@ function watchActions(id) {
       expectedPlayer,
     });
     partida.FinalizarRehidratacion();
+    if (id === roomId && lastRoomSnapshotData && lastRoomSnapshotData.startRevealPending === true) {
+      ackRoomStartSeen(id, "rehydration-finished").catch(() => {});
+    }
   }
 
   actionsUnsub = onSnapshot(
@@ -1232,6 +1550,50 @@ function watchActions(id) {
           empty: snap.empty,
         });
 
+        const session = window.GameSession || null;
+        const cachedDeckOrder = readRoomDeckOrder(id);
+        const sessionDeckOrder = Array.isArray(session?.deckOrder) ? session.deckOrder : [];
+        const shouldAckStartReveal =
+          !!session &&
+          String(session.roomId || "") === String(id) &&
+          String(lastRoomSnapshotData?.status || "") === "playing" &&
+          lastRoomSnapshotData?.startRevealPending === true;
+        debugMatch("watchActions:firstSnapshot:deckOrder", {
+          docs: snap.size,
+          empty: snap.empty,
+          sessionDeckOrderLength: sessionDeckOrder.length,
+          cachedDeckOrderLength: cachedDeckOrder.length,
+          roomStatus: lastRoomSnapshotData?.status || "",
+          startRevealPending: shouldAckStartReveal,
+          currentPlayer: lastRoomSnapshotData?.currentPlayer,
+          turnActual: lastRoomSnapshotData?.turnActual,
+        });
+
+        if (session && cachedDeckOrder.length === 28 && sessionDeckOrder.length !== 28) {
+          session.deckOrder = cachedDeckOrder.slice(0, 28);
+          debugMatch("watchActions:firstSnapshot:deckOrderHydratedFromCache", {
+            cachedDeckOrderLength: cachedDeckOrder.length,
+          });
+        }
+
+        const effectiveDeckOrder = Array.isArray(session?.deckOrder) ? session.deckOrder : [];
+        if (
+          session &&
+          String(session.roomId || "") === String(id) &&
+          String(lastRoomSnapshotData?.status || "") === "playing" &&
+          effectiveDeckOrder.length !== 28
+        ) {
+          debugMatch("watchActions:firstSnapshot:missingDeckOrder", {
+            docs: snap.size,
+            empty: snap.empty,
+            sessionDeckOrderLength: effectiveDeckOrder.length,
+            cachedDeckOrderLength: cachedDeckOrder.length,
+          });
+          setMatchLoading(true, "Synchronisation sécurisée de la partie...");
+          scheduleLaunchRetry(lastRoomSnapshotData || null);
+          return;
+        }
+
         if (typeof window.Domino.Partida.IniciarRehidratacion === "function") {
           window.Domino.Partida.IniciarRehidratacion();
         }
@@ -1239,6 +1601,15 @@ function watchActions(id) {
           // Rebuild autoritaire depuis Firestore pour éviter toute dérive du cache local.
           if (typeof window.Domino.Partida.Empezar === "function") {
             window.Domino.Partida.Empezar();
+          }
+          if (shouldAckStartReveal === true) {
+            setMatchLoading(false);
+            updateOrientationGuard();
+            debugMatch("watchActions:firstSnapshot:startRevealVisible", {
+              docs: snap.size,
+              currentPlayer: lastRoomSnapshotData?.currentPlayer,
+              turnActual: lastRoomSnapshotData?.turnActual,
+            });
           }
           if (snap.empty) {
             maybeFinishRehydration();
@@ -1257,7 +1628,15 @@ function watchActions(id) {
             window.Domino.Partida.AplicarAccionMultijugador(action);
           });
         } finally {
+          markRoomActionsReady(id);
           maybeFinishRehydration();
+          if (id === roomId && lastRoomSnapshotData && lastRoomSnapshotData.status === "playing") {
+            if (lastRoomSnapshotData.startRevealPending !== true) {
+              setMatchLoading(false);
+            }
+            updateOrientationGuard();
+            scheduleTurnTimeout(id, lastRoomSnapshotData);
+          }
         }
         return;
       }
@@ -1290,6 +1669,11 @@ function launchLocalGame(roomData) {
   const seats = roomData.seats || {};
   const humanSeats = parseSeatsMap(seats);
   const hostSeat = seats[roomData.ownerUid] !== undefined ? seats[roomData.ownerUid] : 0;
+  const effectiveDeckOrder = Array.isArray(roomData.privateDeckOrder) && roomData.privateDeckOrder.length === 28
+    ? writeRoomDeckOrder(roomId, roomData.privateDeckOrder)
+    : (Array.isArray(roomData.deckOrder) && roomData.deckOrder.length === 28
+      ? writeRoomDeckOrder(roomId, roomData.deckOrder)
+      : readRoomDeckOrder(roomId));
 
   window.GameSession = {
     roomId,
@@ -1302,15 +1686,40 @@ function launchLocalGame(roomData) {
     humans: roomData.humanCount || humanSeats.length || 1,
     bots: roomData.botCount || 0,
     status: roomData.status,
+    startRevealPending: roomData.startRevealPending === true,
     currentPlayer: typeof roomData.currentPlayer === "number" ? roomData.currentPlayer : 0,
     turnActual: typeof roomData.turnActual === "number" ? roomData.turnActual : 0,
     lastActionSeq: typeof roomData.lastActionSeq === "number" ? roomData.lastActionSeq : -1,
     entryCostDoes: getCurrentRoomEntryCostDoes(roomData),
     rewardAmountDoes: getCurrentRoomRewardDoes(roomData),
-    deckOrder: Array.isArray(roomData.deckOrder) ? roomData.deckOrder : [],
+    deckOrder: effectiveDeckOrder,
   };
+  if (String(roomData.status || "") === "playing" && effectiveDeckOrder.length !== 28) {
+    debugMatch("launchLocalGame:waitDeckOrder", {
+      status: roomData.status || "",
+      currentPlayer: window.GameSession.currentPlayer,
+      turnActual: window.GameSession.turnActual,
+      lastActionSeq: window.GameSession.lastActionSeq,
+      sessionDeckOrderLength: effectiveDeckOrder.length,
+      cachedDeckOrderLength: readRoomDeckOrder(roomId).length,
+    });
+    setMatchLoading(true, "Préparation sécurisée de la partie...");
+    scheduleLaunchRetry(roomData);
+    return;
+  }
+  if (!isDominoEngineReady()) {
+    debugMatch("launchLocalGame:waitEngine", {
+      status: roomData.status || "",
+      currentPlayer: window.GameSession.currentPlayer,
+      turnActual: window.GameSession.turnActual,
+    });
+    setMatchLoading(true, "Initialisation du jeu...");
+    scheduleLaunchRetry(roomData);
+    return;
+  }
   if (gameLaunched) return;
   gameLaunched = true;
+  clearLaunchRetryTimer();
   setLeaveRoomButtonVisible(true);
   updateOrientationGuard();
 
@@ -1319,6 +1728,7 @@ function launchLocalGame(roomData) {
   );
   debugMatch("launchLocalGame", {
     status: roomData.status || "",
+    startRevealPending: roomData.startRevealPending === true,
     hostSeat,
     humanSeats,
     currentPlayer: window.GameSession.currentPlayer,
@@ -1327,14 +1737,7 @@ function launchLocalGame(roomData) {
     deckOrderLength: window.GameSession.deckOrder.length,
   });
 
-  if (window.Domino && window.Domino.Partida) {
-    // Empêche toute action locale prématurée pendant la reconstruction d'état.
-    if (typeof window.Domino.Partida.IniciarRehidratacion === "function") {
-      window.Domino.Partida.IniciarRehidratacion();
-    }
-    window.Domino.Partida.Empezar();
-    applyCachedActionsInstant(roomId);
-  }
+  setMatchLoading(true, "Synchronisation de la partie...");
   watchActions(roomId);
 }
 
@@ -1359,8 +1762,10 @@ function watchRoom(id) {
         return;
       }
       const data = snap.data();
+      lastRoomSnapshotData = data;
       debugMatch("watchRoom:snapshot", {
         status: data.status || "",
+        startRevealPending: data.startRevealPending === true,
         currentPlayer: data.currentPlayer,
         turnActual: data.turnActual,
         lastActionSeq: data.lastActionSeq,
@@ -1379,10 +1784,36 @@ function watchRoom(id) {
       }
 
       if (data.status === "ended") {
+        markRoomActionsReady(id);
+        clearFinalizeGameTimer();
         clearTurnTimer();
         clearTimer();
         setMatchLoading(false);
         setStatus("Partie terminée. Clique sur Aller pour continuer.");
+        debugMatch("watchRoom:endedState", {
+          currentPlayer: data.currentPlayer,
+          turnActual: data.turnActual,
+          roomLastActionSeq: data.lastActionSeq,
+          localNextActionSeq: (window.Domino && window.Domino.Partida) ? window.Domino.Partida.SiguienteAccionSeq : -1,
+          localHasAnimation: (window.Domino && window.Domino.Partida && typeof window.Domino.Partida.HayAnimacionColocarActiva === "function")
+            ? window.Domino.Partida.HayAnimacionColocarActiva()
+            : false,
+        });
+        if (window.Domino && window.Domino.Partida && typeof window.Domino.Partida.MarcarManoTerminadaServidor === "function") {
+          window.Domino.Partida.MarcarManoTerminadaServidor(
+            typeof data.winnerSeat === "number" ? data.winnerSeat : -1,
+            data.endedReason || "out",
+            {
+              expectedLastActionSeq: typeof data.lastActionSeq === "number" ? data.lastActionSeq : -1,
+            }
+          );
+        } else if (window.UI && typeof window.UI.MostrarGanador === "function") {
+          window.UI.MostrarGanador(
+            typeof data.winnerSeat === "number" ? data.winnerSeat : -1,
+            data.endedReason || "out",
+            { serverConfirmed: true }
+          );
+        }
         handleEndedRoom(data).catch((err) => {
           console.error("[ROOM] ended handling error", err);
         });
@@ -1391,17 +1822,24 @@ function watchRoom(id) {
 
       if (data.status === "playing") {
         clearTimer();
-        setMatchLoading(false);
         syncGameSessionFromRoom(data);
         launchLocalGame(data);
         maybeNudgeServerForBotTurn(id, data);
         updateOrientationGuard();
-        scheduleTurnTimeout(id, data);
+        if (areRoomActionsReady(id)) {
+          setMatchLoading(false);
+          scheduleTurnTimeout(id, data);
+        } else {
+          clearTurnTimer();
+          setMatchLoading(true, "Synchronisation de la partie...");
+        }
         matchmakingBusy = false;
         return;
       }
 
       if (data.status === "closing") {
+        markRoomActionsReady(id);
+        clearFinalizeGameTimer();
         clearTurnTimer();
         clearTimer();
         setMatchLoading(true, "Finalisation de la salle...");
@@ -1410,6 +1848,8 @@ function watchRoom(id) {
       }
 
       if (data.status === "closed") {
+        markRoomActionsReady(id);
+        clearFinalizeGameTimer();
         clearTurnTimer();
         clearTimer();
         setMatchLoading(false);
@@ -1454,6 +1894,9 @@ async function startMatchmaking() {
 
     roomId = String(matchRes.roomId || "");
     seatIndex = Number(matchRes.seatIndex || 0);
+    if (Array.isArray(matchRes?.privateDeckOrder) && matchRes.privateDeckOrder.length === 28) {
+      writeRoomDeckOrder(roomId, matchRes.privateDeckOrder);
+    }
     if (matchRes.charged === true) {
       writeSettlement(roomId, user.uid, { entryPaid: true, rewardPaid: false });
     }

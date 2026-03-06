@@ -28,6 +28,8 @@ var Domino_Partida = function() {
     this.ReintentosAccion   = {};
     this.ReintentosTurno    = {};
     this.ModoRehidratacion  = false;
+    this.TimerReintentoTurno = 0;
+    this.TimerEsperaFinMano = 0;
 
     this.Opciones = new Domino_Opciones;
 
@@ -46,6 +48,60 @@ var Domino_Partida = function() {
         }
         catch (_) {
         }
+    };
+
+    this.CancelarReintentoTurno = function() {
+        if (this.TimerReintentoTurno !== 0) {
+            clearTimeout(this.TimerReintentoTurno);
+            this.TimerReintentoTurno = 0;
+        }
+    };
+
+    this.CancelarEsperaFinMano = function() {
+        if (this.TimerEsperaFinMano !== 0) {
+            clearTimeout(this.TimerEsperaFinMano);
+            this.TimerEsperaFinMano = 0;
+        }
+    };
+
+    this.EsperarFinAnimacionMano = function(Funcion, Etiqueta, Datos, VerificarListo) {
+        if (typeof(Funcion) !== "function") return;
+        var Listo = false;
+        if (typeof(VerificarListo) === "function") {
+            try {
+                Listo = (VerificarListo() === true);
+            } catch (_) {
+                Listo = false;
+            }
+        } else {
+            Listo = (this.HayAnimacionColocarActiva() === false);
+        }
+        if (Listo === true) {
+            this.CancelarEsperaFinMano();
+            Funcion();
+            return;
+        }
+        if (this.TimerEsperaFinMano !== 0) return;
+        this.DebugLog(Etiqueta || "FinMano:waitAnimation", Object.assign({
+            hayAnimacionColocar: this.HayAnimacionColocarActiva(),
+            siguienteAccionSeq: this.SiguienteAccionSeq
+        }, Datos || { }));
+        this.TimerEsperaFinMano = setTimeout(function() {
+            this.TimerEsperaFinMano = 0;
+            this.EsperarFinAnimacionMano(Funcion, Etiqueta, Datos, VerificarListo);
+        }.bind(this), 90);
+    };
+
+    this.ProgramarReintentoTurno = function(DelayMs, Etiqueta, Datos) {
+        var Delay = (typeof(DelayMs) === "number" && DelayMs > 0) ? DelayMs : 120;
+        if (this.TimerReintentoTurno !== 0) return;
+        this.DebugLog(Etiqueta || "Turno:retryScheduled", Object.assign({
+            delayMs: Delay
+        }, Datos || { }));
+        this.TimerReintentoTurno = setTimeout(function() {
+            this.TimerReintentoTurno = 0;
+            this.Turno();
+        }.bind(this), Delay);
     };
 
     this.CrearFichas = function() {
@@ -132,7 +188,18 @@ var Domino_Partida = function() {
 
     this.AplicarOrdenFichas = function() {
         var S = (typeof(window.GameSession) !== "undefined") ? window.GameSession : null;
+        this.DebugLog("AplicarOrdenFichas:begin", {
+            multijugador: this.Multijugador,
+            hasSession: !!S,
+            deckOrderLength: (S && Array.isArray(S.deckOrder)) ? S.deckOrder.length : 0
+        });
         if (this.Multijugador === false || !S || !Array.isArray(S.deckOrder) || S.deckOrder.length !== 28) {
+            if (this.Multijugador === true) {
+                this.DebugLog("AplicarOrdenFichas:fallbackRandom", {
+                    hasSession: !!S,
+                    deckOrderLength: (S && Array.isArray(S.deckOrder)) ? S.deckOrder.length : 0
+                });
+            }
             for (var i = this.Ficha.length - 1; i > 0; i--) {
                 this.Ficha[i].Colocada = false;
                 var j = Math.floor(Math.random() * (i + 1));
@@ -170,6 +237,9 @@ var Domino_Partida = function() {
             Nuevo.push(this.Ficha[Number(S.deckOrder[k])]);
         }
         this.Ficha = Nuevo;
+        this.DebugLog("AplicarOrdenFichas:applied", {
+            deckOrderLength: S.deckOrder.length
+        });
     };
 
     this.PosibilidadesJugador = function(seat) {
@@ -211,6 +281,20 @@ var Domino_Partida = function() {
 
     this.SeatDeFicha = function(tilePos) {
         return Math.floor(tilePos / 7);
+    };
+
+    this.DebeAnimarAccionEnRehidratacion = function(Accion) {
+        var S = (typeof(window.GameSession) !== "undefined") ? window.GameSession : null;
+        return (
+            this.Multijugador === true &&
+            this.ModoRehidratacion === true &&
+            !!S &&
+            S.startRevealPending === true &&
+            Accion &&
+            Accion.type === "play" &&
+            typeof(Accion.seq) === "number" &&
+            Accion.seq === 0
+        );
     };
 
     this.ValidarAccionPlay = function(Accion) {
@@ -353,15 +437,20 @@ var Domino_Partida = function() {
     };
 
     this.IniciarRehidratacion = function() {
+        this.CancelarReintentoTurno();
+        this.CancelarEsperaFinMano();
         this.ModoRehidratacion = true;
         this.EsperandoPublicar = false;
         this.AccionesPendientes = {};
         this.ReintentosAccion = {};
         this.ReintentosTurno = {};
+        this.ServerWinnerShown = false;
         this.DebugLog("IniciarRehidratacion");
     };
 
     this.FinalizarRehidratacion = function() {
+        this.CancelarReintentoTurno();
+        this.CancelarEsperaFinMano();
         this.ModoRehidratacion = false;
         this.DebugLog("FinalizarRehidratacion");
         this.Turno();
@@ -389,6 +478,8 @@ var Domino_Partida = function() {
         this.AccionesPendientes = {};
         this.ReintentosAccion = {};
         this.ReintentosTurno = {};
+        this.CancelarEsperaFinMano();
+        this.ServerWinnerShown = false;
 
         document.getElementById("Historial").innerHTML = "";
 
@@ -442,14 +533,38 @@ var Domino_Partida = function() {
     this.Turno = function() {
         if (this.ModoRehidratacion === true) return;
         if (this.ManoTerminada === true) return;
+        this.CancelarReintentoTurno();
         this.DebugLog("Turno:enter", {
             tableroListo: this.TableroListo(),
             esTurnoHumanoLocal: this.EsTurnoHumanoLocal(),
             esTurnoHumanoRemoto: this.EsTurnoHumanoRemoto()
         });
         if (this.Multijugador === true) {
+            var S = (typeof(window.GameSession) !== "undefined") ? window.GameSession : null;
+            if (S && S.startRevealPending === true) {
+                this.DebugLog("Turno:waitingStartReveal", {
+                    expectedSeq: this.SiguienteAccionSeq
+                });
+                this.MostrarMensaje(this.LocalSeat,
+                    "<span data-idioma-en='Waiting for players to see the table...' data-idioma-cat='Esperant que els jugadors vegin la taula...' data-idioma-es='Esperando a que los jugadores vean la mesa...'></span>", "negro");
+                this.ProgramarReintentoTurno(120, "Turno:retryWaitingStartReveal", {
+                    expectedSeq: this.SiguienteAccionSeq
+                });
+                return;
+            }
             // Si hay una acción de red pendiente para el seq esperado, se aplica primero.
             if (this.ProcesarPendientes() === true) return;
+            if (this.HayAnimacionColocarActiva() === true) {
+                var TienePendienteEsperada = (typeof(this.AccionesPendientes[this.SiguienteAccionSeq]) !== "undefined");
+                this.DebugLog(TienePendienteEsperada ? "Turno:waitingPendingAnimation" : "Turno:waitingAnimation", {
+                    expectedSeq: this.SiguienteAccionSeq
+                });
+                this.ProgramarReintentoTurno(TienePendienteEsperada ? 90 : 120, "Turno:retryAfterAnimation", {
+                    expectedSeq: this.SiguienteAccionSeq,
+                    hasExpectedPending: TienePendienteEsperada
+                });
+                return;
+            }
         }
 
         document.getElementById("Mano").innerHTML = this.Mano;
@@ -461,6 +576,9 @@ var Domino_Partida = function() {
         if (this.Multijugador === true && this.TurnoActual > 0 && this.TableroListo() === false) {
             this.DebugLog("Turno:waitingBoard");
             this.MostrarMensaje(this.LocalSeat, "<span data-idioma-en='Syncing board...' data-idioma-cat='Sincronitzant tauler...' data-idioma-es='Sincronizando tablero...'></span>", "negro");
+            this.ProgramarReintentoTurno(120, "Turno:retryWaitingBoard", {
+                expectedSeq: this.SiguienteAccionSeq
+            });
             return;
         }
 
@@ -491,6 +609,9 @@ var Domino_Partida = function() {
                 openingSeat: this.JugadorActual
             });
             this.MostrarMensaje(this.LocalSeat, "<span data-idioma-en='Syncing board...' data-idioma-cat='Sincronitzant tauler...' data-idioma-es='Sincronizando tablero...'></span>", "negro");
+            this.ProgramarReintentoTurno(120, "Turno:retryOpeningSync", {
+                openingSeat: this.JugadorActual
+            });
             return;
         }
 
@@ -660,7 +781,17 @@ var Domino_Partida = function() {
             // Puede llegar durante una animación: se re-encola hasta que el estado local avance.
             if (typeof(Accion.seq) === "number") {
                 this.AccionesPendientes[Accion.seq] = Accion;
-                if (this.ModoRehidratacion === true) return;
+                if (this.ModoRehidratacion === true) {
+                    this.DebugLog("AplicarAccion:rehydrationWaitPlayer", {
+                        seq: Accion.seq,
+                        expectedPlayer: this.JugadorActual,
+                        actualPlayer: Accion.player,
+                        expectedTurn: this.TurnoActual,
+                        branch: Accion.branch || "",
+                        type: Accion.type || ""
+                    });
+                    return;
+                }
                 var RT = this.ReintentosTurno[Accion.seq] || 0;
                 if (RT < 30) {
                     this.ReintentosTurno[Accion.seq] = RT + 1;
@@ -670,7 +801,10 @@ var Domino_Partida = function() {
                         actualPlayer: Accion.player,
                         retries: this.ReintentosTurno[Accion.seq]
                     });
-                    setTimeout(function() { this.Turno(); }.bind(this), 90);
+                    this.ProgramarReintentoTurno(90, "AplicarAccion:retryTurnScheduled", {
+                        seq: Accion.seq,
+                        retries: this.ReintentosTurno[Accion.seq]
+                    });
                     return;
                 }
                 console.error("[SYNC] Accion fuera de turno", Accion, "turno esperado:", this.JugadorActual);
@@ -697,7 +831,10 @@ var Domino_Partida = function() {
                         this.AccionesPendientes[Accion.seq] = Accion;
                     }
                     if (this.ModoRehidratacion === true) return;
-                    setTimeout(function() { this.Turno(); }.bind(this), 120);
+                    this.ProgramarReintentoTurno(120, "AplicarAccion:retryPlayScheduled", {
+                        seq: Accion.seq,
+                        retries: this.ReintentosAccion[SeqKey]
+                    });
                     return;
                 }
 
@@ -730,14 +867,27 @@ var Domino_Partida = function() {
             if (this.TurnoActual > 0) {
                 origen = (Accion.branch === "izquierda") ? this.FichaIzquierda : this.FichaDerecha;
             }
-
-            this.Ficha[idx].Colocar(origen, Accion.player === this.LocalSeat, this.ModoRehidratacion === true, Accion.branch);
+            var AnimarRehidratacion = (this.DebeAnimarAccionEnRehidratacion(Accion) === true);
+            if (AnimarRehidratacion === true) {
+                this.DebugLog("AplicarAccion:animateDuringRehydration", {
+                    seq: Accion.seq,
+                    player: Accion.player,
+                    branch: Accion.branch
+                });
+            }
+            this.Ficha[idx].Colocar(
+                origen,
+                Accion.player === this.LocalSeat,
+                (this.ModoRehidratacion === true && AnimarRehidratacion === false),
+                Accion.branch
+            );
             if (this.ModoRehidratacion === false) {
                 this.MostrarMensaje(Accion.player,
                     "<span>" + this.Opciones.NombreJugador[Accion.player] + "</span>" +
                     "<span data-idioma-en=' throws : ' data-idioma-cat=' tira : ' data-idioma-es=' tira : '></span>" +
                     "<img src='./Domino.svg#Ficha_" + this.Ficha[idx].Valores[1] + "-" + this.Ficha[idx].Valores[0] +"' />");
             }
+            this.Pasado = 0;
 
             if (this.ComprobarManoTerminada(Accion.player) === true) return;
             if (this.ModoRehidratacion === false) this.OcultarAyuda();
@@ -749,7 +899,10 @@ var Domino_Partida = function() {
                 nextSeq: this.SiguienteAccionSeq
             });
             if (this.ModoRehidratacion === false) {
-                setTimeout(function() { this.Turno(); }.bind(this), this.TiempoTurno);
+                this.ProgramarReintentoTurno(this.TiempoTurno, "AplicarAccion:playNextTurn", {
+                    seq: Accion.seq,
+                    nextSeq: this.SiguienteAccionSeq
+                });
             }
             return;
         }
@@ -791,7 +944,10 @@ var Domino_Partida = function() {
                 nextSeq: this.SiguienteAccionSeq
             });
             if (this.ModoRehidratacion === false) {
-                setTimeout(function() { this.Turno(); }.bind(this), this.TiempoTurno);
+                this.ProgramarReintentoTurno(this.TiempoTurno, "AplicarAccion:passNextTurn", {
+                    seq: Accion.seq,
+                    nextSeq: this.SiguienteAccionSeq
+                });
             }
             return;
         }
@@ -808,20 +964,30 @@ var Domino_Partida = function() {
 
         var SeatComprobar = (typeof(SeatReferencia) === "number") ? SeatReferencia : this.JugadorActual;
         var Colocadas = 0;
+        var GanadorDetectado = -1;
+        var MotivoDetectado = "";
         for (var i = 0; i < 7; i++) {
             if (this.Ficha[(SeatComprobar * 7) + i].Colocada === true) Colocadas++;
         }
 
         if (Colocadas === 7) {
+            if (this.Multijugador === false && this.HayAnimacionColocarActiva() === true) {
+                this.EsperarFinAnimacionMano(function() {
+                    this.ComprobarManoTerminada(SeatComprobar);
+                }.bind(this), "ComprobarManoTerminada:waitLastTileAnimation", {
+                    winnerSeat: SeatComprobar,
+                    reason: "out"
+                });
+                return true;
+            }
             this.MostrarMensaje(SeatComprobar,
                 "<span>" + this.Opciones.NombreJugador[SeatComprobar] + "</span>" +
                 "<span data-idioma-en=' wins this hand!' data-idioma-cat=' guanya aquesta mà!' data-idioma-es=' gana esta mano!'></span>", "verde");
-            this.ManoTerminada = true;
-            UI.MostrarGanador(SeatComprobar, "out");
+            GanadorDetectado = SeatComprobar;
+            MotivoDetectado = "out";
         }
 
         if (this.Pasado === 4) {
-            this.ManoTerminada = true;
             var MejorJugador = 0;
             var MenorPuntuacion = this.ContarPuntos(0);
             for (var j = 1; j < 4; j++) {
@@ -834,7 +1000,25 @@ var Domino_Partida = function() {
             this.MostrarMensaje(MejorJugador,
                 "<span>" + this.Opciones.NombreJugador[MejorJugador] + "</span>" +
                 "<span data-idioma-en=' wins by block' data-idioma-cat=' guanya per bloqueig' data-idioma-es=' gana por bloqueo'></span>", "verde");
-            UI.MostrarGanador(MejorJugador, "block");
+            GanadorDetectado = MejorJugador;
+            MotivoDetectado = "block";
+        }
+
+        if (GanadorDetectado >= 0) {
+            if (this.Multijugador === true) {
+                this.DebugLog("ComprobarManoTerminada:awaitServer", {
+                    winnerSeat: GanadorDetectado,
+                    reason: MotivoDetectado,
+                    pasado: this.Pasado
+                });
+                if (window.LogiqueJeu && typeof(window.LogiqueJeu.onGameEnded) === "function") {
+                    window.LogiqueJeu.onGameEnded(GanadorDetectado);
+                }
+                return false;
+            }
+
+            this.ManoTerminada = true;
+            UI.MostrarGanador(GanadorDetectado, MotivoDetectado);
         }
 
         if (this.ManoTerminada === true) {
@@ -845,6 +1029,53 @@ var Domino_Partida = function() {
             return true;
         }
         return false;
+    };
+
+    this.MarcarManoTerminadaServidor = function(GanadorSeat, Motivo, Meta) {
+        if (this.ServerWinnerShown === true) return true;
+        var MetaInfo = (Meta && typeof(Meta) === "object") ? Meta : { };
+        var ExpectedLastActionSeq = (typeof(MetaInfo.expectedLastActionSeq) === "number") ? MetaInfo.expectedLastActionSeq : -1;
+        var DebeEsperarAccion = (ExpectedLastActionSeq >= 0 && this.SiguienteAccionSeq <= ExpectedLastActionSeq);
+        var DebeEsperarAnimacion = (this.HayAnimacionColocarActiva() === true);
+        this.DebugLog("MarcarManoTerminadaServidor:check", {
+            winnerSeat: GanadorSeat,
+            reason: Motivo || "out",
+            expectedLastActionSeq: ExpectedLastActionSeq,
+            siguienteAccionSeq: this.SiguienteAccionSeq,
+            debeEsperarAccion: DebeEsperarAccion,
+            debeEsperarAnimacion: DebeEsperarAnimacion
+        });
+        if (DebeEsperarAccion === true || DebeEsperarAnimacion === true) {
+            this.EsperarFinAnimacionMano(function() {
+                this.MarcarManoTerminadaServidor(GanadorSeat, Motivo, MetaInfo);
+            }.bind(this), DebeEsperarAccion === true ? "MarcarManoTerminadaServidor:waitLastAction" : "MarcarManoTerminadaServidor:waitAnimation", {
+                winnerSeat: GanadorSeat,
+                reason: Motivo || "out",
+                expectedLastActionSeq: ExpectedLastActionSeq
+            }, function() {
+                var ActionReady = (ExpectedLastActionSeq < 0 || this.SiguienteAccionSeq > ExpectedLastActionSeq);
+                return (this.HayAnimacionColocarActiva() === false && ActionReady === true);
+            }.bind(this));
+            return false;
+        }
+        this.DebugLog("MarcarManoTerminadaServidor:showWinner", {
+            winnerSeat: GanadorSeat,
+            reason: Motivo || "out",
+            expectedLastActionSeq: ExpectedLastActionSeq,
+            siguienteAccionSeq: this.SiguienteAccionSeq
+        });
+        this.ServerWinnerShown = true;
+        this.CancelarEsperaFinMano();
+        this.ManoTerminada = true;
+        this.ContinuandoPartida = false;
+        this.OcultarAyuda();
+        for (var f = 0; f < this.Ficha.length; f++) {
+            this.Ficha[f].RotarBocaArriba();
+        }
+        if (window.UI && typeof(window.UI.MostrarGanador) === "function") {
+            window.UI.MostrarGanador(GanadorSeat, Motivo || "out", { serverConfirmed: true });
+        }
+        return true;
     };
 
     this.ContarPuntos = function(Jugador) {

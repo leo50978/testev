@@ -182,6 +182,10 @@ function sanitizePlayerLabel(email, fallbackSeat = 0) {
   return cleaned || `Joueur ${fallbackSeat + 1}`;
 }
 
+function botSeatLabel(seat = 0) {
+  return `Bot ${Number(seat) + 1}`;
+}
+
 function toMillis(value) {
   if (!value) return 0;
   if (value instanceof Date) return value.getTime();
@@ -886,6 +890,29 @@ function makeDeckOrder() {
   return arr;
 }
 
+function normalizePrivateDeckOrder(raw) {
+  if (!Array.isArray(raw) || raw.length !== 28) return [];
+  const seen = new Set();
+  const out = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const tileId = Number(raw[i]);
+    if (!Number.isFinite(tileId) || tileId < 0 || tileId >= 28 || seen.has(tileId)) {
+      return [];
+    }
+    seen.add(tileId);
+    out.push(Math.trunc(tileId));
+  }
+  return out;
+}
+
+async function readPrivateDeckOrderForRoom(roomId) {
+  const safeRoomId = String(roomId || "").trim();
+  if (!safeRoomId) return [];
+  const snap = await gameStateRef(safeRoomId).get();
+  if (!snap.exists) return [];
+  return normalizePrivateDeckOrder(snap.data()?.deckOrder);
+}
+
 function starterSeatFromDeckOrder(deckOrder) {
   if (!Array.isArray(deckOrder) || deckOrder.length !== 28) {
     return Math.floor(Math.random() * 4);
@@ -980,6 +1007,14 @@ function getHumanSeatSet(room = {}) {
     Object.values(getRoomSeats(room))
       .map((seat) => Number(seat))
       .filter((seat) => Number.isFinite(seat) && seat >= 0 && seat < 4)
+  );
+}
+
+function getBlockedRejoinSet(room = {}) {
+  return new Set(
+    Array.isArray(room.blockedRejoinUids)
+      ? room.blockedRejoinUids.map((uid) => String(uid || "").trim()).filter(Boolean)
+      : []
   );
 }
 
@@ -1716,6 +1751,7 @@ async function processPendingBotTurns(roomId) {
     const room = roomSnap.data() || {};
 
     if (String(room.status || "") !== "playing") return;
+    if (room.startRevealPending === true) return;
     const roomWinnerSeat = Number.isFinite(Number(room.winnerSeat))
       ? Math.trunc(Number(room.winnerSeat))
       : -1;
@@ -1738,6 +1774,9 @@ async function processPendingBotTurns(roomId) {
 
       const liveRoom = liveRoomSnap.data() || {};
       if (String(liveRoom.status || "") !== "playing") {
+        return { processed: false, stop: true };
+      }
+      if (liveRoom.startRevealPending === true) {
         return { processed: false, stop: true };
       }
       const liveWinnerSeat = Number.isFinite(Number(liveRoom.winnerSeat))
@@ -2129,6 +2168,9 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
 
   const active = await findActiveRoomForUser(uid);
   if (active && active.seatIndex >= 0) {
+    const privateDeckOrder = active.status === "playing"
+      ? await readPrivateDeckOrderForRoom(active.roomId)
+      : [];
     return {
       ok: true,
       resumed: true,
@@ -2136,6 +2178,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
       roomId: active.roomId,
       seatIndex: active.seatIndex,
       status: active.status,
+      privateDeckOrder,
     };
   }
 
@@ -2168,6 +2211,9 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
         if (room.status !== "waiting") {
           throw new HttpsError("aborted", "Salle non disponible.");
         }
+        if (getBlockedRejoinSet(room).has(uid)) {
+          throw new HttpsError("aborted", "Salle non disponible.");
+        }
 
         const roomEntryCostDoes = safeInt(room.entryCostDoes || room.stakeDoes);
         const roomRewardAmountDoes = resolveRoomRewardDoes(room);
@@ -2180,6 +2226,9 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
         if (playerUids.includes(uid)) {
           const seats = currentSeats;
           const seatIndex = typeof seats[uid] === "number" ? seats[uid] : 0;
+          const privateDeckOrder = room.status === "playing"
+            ? await readPrivateDeckOrderForRoom(roomRef.id)
+            : [];
           return {
             ok: true,
             resumed: true,
@@ -2187,6 +2236,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
             roomId: roomRef.id,
             seatIndex,
             status: room.status,
+            privateDeckOrder,
           };
         }
 
@@ -2277,6 +2327,8 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
           tx.set(gameStateRef(roomRef.id), buildGameStateWrite(finalState), { merge: true });
 
           updates.status = finalState.winnerSeat >= 0 ? "ended" : "playing";
+          updates.startRevealPending = finalState.winnerSeat < 0;
+          updates.startRevealAckUids = [];
           updates.startedAt = admin.firestore.FieldValue.serverTimestamp();
           updates.startedAtMs = Date.now();
           updates.deckOrder = admin.firestore.FieldValue.delete();
@@ -2300,12 +2352,16 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
           roomId: roomRef.id,
           seatIndex,
           status: String(updates.status || "waiting"),
+          startRevealPending: updates.startRevealPending === true,
           does: walletMutation.afterDoes,
+          privateDeckOrder: updates.status === "playing" ? finalState.deckOrder.slice(0, 28) : [],
         };
       });
 
       if (joined?.status === "playing") {
-        await processPendingBotTurns(String(joined.roomId || ""));
+        if (joined?.startRevealPending !== true) {
+          await processPendingBotTurns(String(joined.roomId || ""));
+        }
       }
       return joined;
     } catch (err) {
@@ -2337,10 +2393,13 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
       ownerUid: uid,
       playerUids: [uid, "", "", ""],
       playerNames: [sanitizePlayerLabel(email || uid, 0), "", "", ""],
+      blockedRejoinUids: [],
       humanCount: 1,
       seats: { [uid]: 0 },
       botCount: 3,
       botDifficulty: configuredBotDifficulty,
+      startRevealPending: false,
+      startRevealAckUids: [],
       startedAt: null,
       startedAtMs: 0,
       endedAtMs: 0,
@@ -2427,6 +2486,8 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
 
     const updates = {
       status: finalState.winnerSeat >= 0 ? "ended" : "playing",
+      startRevealPending: finalState.winnerSeat < 0,
+      startRevealAckUids: [],
       botCount: Math.max(0, 4 - humans),
       botDifficulty: configuredBotDifficulty,
       startedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2453,14 +2514,97 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
       ok: true,
       started: true,
       status: String(updates.status || "playing"),
+      startRevealPending: updates.startRevealPending === true,
+      privateDeckOrder: String(updates.status || "playing") === "playing" ? finalState.deckOrder.slice(0, 28) : [],
     };
   });
 
   if (startResult?.status === "playing") {
-    await processPendingBotTurns(roomId);
+    if (!Array.isArray(startResult.privateDeckOrder) || startResult.privateDeckOrder.length !== 28) {
+      startResult.privateDeckOrder = await readPrivateDeckOrderForRoom(roomId);
+    }
+    if (startResult.startRevealPending !== true) {
+      await processPendingBotTurns(roomId);
+    }
   }
 
   return startResult;
+});
+
+exports.ackRoomStartSeen = publicOnCall("ackRoomStartSeen", async (request) => {
+  const { uid } = assertAuth(request);
+  const payload = request.data && typeof request.data === "object" ? request.data : {};
+  const roomId = String(payload.roomId || "").trim();
+
+  if (!roomId) {
+    throw new HttpsError("invalid-argument", "roomId requis.");
+  }
+
+  const roomRef = db.collection(ROOMS_COLLECTION).doc(roomId);
+  const ackResult = await db.runTransaction(async (tx) => {
+    const roomSnap = await tx.get(roomRef);
+    if (!roomSnap.exists) {
+      throw new HttpsError("not-found", "Salle introuvable.");
+    }
+
+    const room = roomSnap.data() || {};
+    const humanUids = Array.isArray(room.playerUids)
+      ? room.playerUids.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const ackUids = Array.isArray(room.startRevealAckUids)
+      ? room.startRevealAckUids.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const ackSet = new Set(ackUids);
+
+    if (String(room.status || "") !== "playing") {
+      return {
+        ok: true,
+        pending: false,
+        released: false,
+        humanCount: humanUids.length,
+        ackCount: ackSet.size,
+      };
+    }
+
+    const seatIndex = getSeatForUser(room, uid);
+    if (seatIndex < 0) {
+      throw new HttpsError("permission-denied", "Tu ne fais pas partie de cette salle.");
+    }
+
+    ackSet.add(uid);
+    if (room.startRevealPending !== true) {
+      return {
+        ok: true,
+        pending: false,
+        released: false,
+        humanCount: humanUids.length,
+        ackCount: ackSet.size,
+      };
+    }
+
+    const nextAckUids = Array.from(ackSet);
+    const ready = humanUids.length > 0 && humanUids.every((humanUid) => ackSet.has(humanUid));
+
+    tx.update(roomRef, {
+      startRevealAckUids: nextAckUids,
+      startRevealPending: ready ? false : true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return {
+      ok: true,
+      pending: !ready,
+      released: ready,
+      humanCount: humanUids.length,
+      ackCount: nextAckUids.length,
+    };
+  });
+
+  if (ackResult?.released === true) {
+    await processPendingBotTurns(roomId);
+  }
+
+  return ackResult;
 });
 
 exports.leaveRoom = publicOnCall("leaveRoom", async (request) => {
@@ -2474,6 +2618,7 @@ exports.leaveRoom = publicOnCall("leaveRoom", async (request) => {
 
   const roomRef = db.collection(ROOMS_COLLECTION).doc(roomId);
   let shouldCleanup = false;
+  let shouldNudgeBots = false;
 
   const result = await db.runTransaction(async (tx) => {
     const roomSnap = await tx.get(roomRef);
@@ -2496,19 +2641,21 @@ exports.leaveRoom = publicOnCall("leaveRoom", async (request) => {
     }
 
     const status = String(room.status || "");
-    if (status === "playing") {
-      throw new HttpsError("failed-precondition", "Impossible de quitter une partie en cours.");
-    }
-
     const seatIndex = currentUids.findIndex((candidate) => candidate === uid);
     const nextPlayerUids = currentUids.slice();
     if (seatIndex >= 0) nextPlayerUids[seatIndex] = "";
     const currentNames = Array.from({ length: 4 }, (_, idx) => String((room.playerNames || [])[idx] || ""));
     const nextPlayerNames = currentNames.slice();
-    if (seatIndex >= 0) nextPlayerNames[seatIndex] = "";
+    if (seatIndex >= 0) {
+      nextPlayerNames[seatIndex] = status === "playing" ? botSeatLabel(seatIndex) : "";
+    }
 
     const nextSeats = { ...getRoomSeats(room) };
     delete nextSeats[uid];
+    const blockedRejoinUids = Array.from(getBlockedRejoinSet(room));
+    if (!blockedRejoinUids.includes(uid)) {
+      blockedRejoinUids.push(uid);
+    }
 
     const humans = nextPlayerUids.filter(Boolean).length;
     if (humans <= 0) {
@@ -2517,6 +2664,7 @@ exports.leaveRoom = publicOnCall("leaveRoom", async (request) => {
         status: "closing",
         playerUids: ["", "", "", ""],
         playerNames: ["", "", "", ""],
+        blockedRejoinUids,
         playerEmails: admin.firestore.FieldValue.delete(),
         seats: {},
         humanCount: 0,
@@ -2530,26 +2678,47 @@ exports.leaveRoom = publicOnCall("leaveRoom", async (request) => {
       };
     }
 
+    const nextAckUids = Array.isArray(room.startRevealAckUids)
+      ? room.startRevealAckUids.map((item) => String(item || "").trim()).filter(Boolean).filter((item) => item !== uid)
+      : [];
+    const revealPending = room.startRevealPending === true;
+    const revealReady = revealPending === true
+      && nextPlayerUids.filter(Boolean).every((playerUid) => nextAckUids.includes(playerUid));
+    const nextBotCount = Math.max(0, 4 - humans);
+
     tx.update(roomRef, {
       playerUids: nextPlayerUids,
       playerNames: nextPlayerNames,
+      blockedRejoinUids,
       playerEmails: admin.firestore.FieldValue.delete(),
       seats: nextSeats,
       humanCount: humans,
-      botCount: status === "waiting" ? Math.max(0, 4 - humans) : safeInt(room.botCount),
+      botCount: nextBotCount,
+      startRevealAckUids: nextAckUids,
+      startRevealPending: revealPending === true ? !revealReady : false,
       ownerUid: room.ownerUid === uid
         ? String(nextPlayerUids.find(Boolean) || "")
         : String(room.ownerUid || ""),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    if (status === "playing") {
+      shouldNudgeBots = true;
+    }
+
     return {
       ok: true,
       deleted: false,
       status: String(room.status || ""),
       humanCount: humans,
+      botCount: nextBotCount,
+      revealPending: revealPending === true ? !revealReady : false,
     };
   });
+
+  if (shouldNudgeBots) {
+    await processPendingBotTurns(roomId);
+  }
 
   if (!shouldCleanup) {
     return result;
@@ -2772,6 +2941,9 @@ exports.submitAction = publicOnCall("submitAction", async (request) => {
     const room = roomSnap.data() || {};
     if (room.status !== "playing") {
       throw new HttpsError("failed-precondition", "La partie n'est pas en cours.");
+    }
+    if (room.startRevealPending === true) {
+      throw new HttpsError("failed-precondition", "La partie se synchronise encore.");
     }
     const localSeat = getSeatForUser(room, uid);
     if (localSeat < 0) {
