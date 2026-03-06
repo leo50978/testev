@@ -33,6 +33,10 @@ function readRecentAuthSuccessNotice() {
   }
 }
 
+function getHomeShell() {
+  return document.getElementById("domino-app-shell") || document.body;
+}
+
 function renderHomeFromAuth(user, options = {}) {
   const uid = String(user?.uid || "");
   const optimistic = options?.optimistic === true;
@@ -50,7 +54,7 @@ function renderHomeFromAuth(user, options = {}) {
 }
 
 function renderHomeLoading() {
-  document.body.innerHTML = `
+  getHomeShell().innerHTML = `
     <div class="min-h-screen grid place-items-center bg-[#3F4766] text-white font-['Poppins']">
       <div class="rounded-3xl border border-white/15 bg-white/10 px-6 py-5 text-center shadow-[12px_12px_28px_rgba(25,30,44,0.42),-10px_-10px_24px_rgba(97,110,150,0.16)] backdrop-blur-md">
         <div class="text-sm font-semibold tracking-wide">Chargement...</div>

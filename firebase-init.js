@@ -102,8 +102,6 @@ function shouldSkipAppCheckOnCurrentPage() {
     host.endsWith(".local");
   return (
     isLocalDevHost ||
-    path.endsWith("/auth.html") ||
-    path.endsWith("auth.html") ||
     path.startsWith("/__/auth/")
   );
 }
@@ -187,7 +185,7 @@ async function bootstrapRemoteAppCheck() {
 function initializeAppCheckSafely() {
   if (shouldSkipAppCheckOnCurrentPage()) {
     if (typeof console !== "undefined") {
-      console.info("[APP_CHECK] ignoré en environnement local/dev ou page d'authentification.");
+      console.info("[APP_CHECK] ignoré en environnement local/dev ou handler Firebase Auth.");
     }
     return;
   }

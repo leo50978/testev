@@ -26,6 +26,10 @@ let page2PresenceVisibilityBound = false;
 let page2PresenceUser = null;
 const profileBootstrapInFlightByUid = new Map();
 
+function getPage2Shell() {
+  return document.getElementById("domino-app-shell") || document.body;
+}
+
 function safeInt(value) {
   const num = Number(value);
   return Number.isFinite(num) ? Math.max(0, Math.floor(num)) : 0;
@@ -263,6 +267,7 @@ function initAgentSupportAlert(user) {
 export function renderPage2(user, options = {}) {
   hideGlobalLoading();
   stopPage2ChatWatchers();
+  const pageShell = getPage2Shell();
   page2PresenceUser = user || null;
   const incomingUid = String(page2PresenceUser?.uid || "");
   const currentAuthUid = String(auth.currentUser?.uid || "");
@@ -292,7 +297,7 @@ export function renderPage2(user, options = {}) {
                 </button>
     `;
 
-  document.body.innerHTML = `
+  pageShell.innerHTML = `
     <div id="page2Root" class="min-h-[100dvh] bg-[#3F4766] px-0 pt-0 pb-[max(2rem,env(safe-area-inset-bottom))] text-white font-['Poppins'] overflow-x-hidden">
       <div class="w-full">
         <section class="relative h-[80dvh] min-h-[420px] w-full overflow-hidden rounded-none">
@@ -344,7 +349,7 @@ export function renderPage2(user, options = {}) {
     });
   }
 
-  document.body.insertAdjacentHTML("beforeend", `
+  pageShell.insertAdjacentHTML("beforeend", `
     <div id="rulesModalOverlay" class="fixed inset-0 z-[3400] hidden items-center justify-center bg-black/45 p-4 backdrop-blur-sm">
       <div id="rulesModalPanel" class="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-3xl border border-white/20 bg-[#3F4766]/60 p-5 text-white shadow-[14px_14px_34px_rgba(16,23,40,0.5),-10px_-10px_24px_rgba(112,126,165,0.2)] backdrop-blur-xl sm:p-6">
         <div class="flex items-center justify-between">
@@ -397,7 +402,7 @@ export function renderPage2(user, options = {}) {
     </div>
   `);
 
-  document.body.insertAdjacentHTML("beforeend", `
+  pageShell.insertAdjacentHTML("beforeend", `
     <div id="doesRequiredOverlay" class="fixed inset-0 z-[3450] hidden items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
       <div class="w-full max-w-md rounded-3xl border border-white/20 bg-[#3F4766]/75 p-5 text-white shadow-[14px_14px_34px_rgba(16,23,40,0.5),-10px_-10px_24px_rgba(112,126,165,0.2)] backdrop-blur-xl sm:p-6">
         <h3 class="text-xl font-bold">Solde Does insuffisant</h3>
@@ -419,7 +424,7 @@ export function renderPage2(user, options = {}) {
     </div>
   `);
 
-  document.body.insertAdjacentHTML("beforeend", `
+  pageShell.insertAdjacentHTML("beforeend", `
     <div id="stakeSelectionOverlay" class="fixed inset-0 z-[3460] hidden items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
       <div id="stakeSelectionPanel" class="w-full max-w-lg rounded-3xl border border-white/20 bg-[#3F4766]/80 p-5 text-white shadow-[14px_14px_34px_rgba(16,23,40,0.5),-10px_-10px_24px_rgba(112,126,165,0.2)] backdrop-blur-xl sm:p-6">
         <div class="flex items-center justify-between gap-3">
@@ -440,7 +445,7 @@ export function renderPage2(user, options = {}) {
     </div>
   `);
 
-  document.body.insertAdjacentHTML("beforeend", `
+  pageShell.insertAdjacentHTML("beforeend", `
     <div id="stakeUnavailableOverlay" class="fixed inset-0 z-[3470] hidden items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
       <div id="stakeUnavailablePanel" class="w-full max-w-sm rounded-3xl border border-white/20 bg-[#3F4766]/82 p-5 text-white shadow-[14px_14px_34px_rgba(16,23,40,0.5),-10px_-10px_24px_rgba(112,126,165,0.2)] backdrop-blur-xl sm:p-6">
         <h3 class="text-lg font-bold">Pas encore disponible</h3>
@@ -452,7 +457,7 @@ export function renderPage2(user, options = {}) {
     </div>
   `);
 
-  document.body.insertAdjacentHTML("beforeend", `
+  pageShell.insertAdjacentHTML("beforeend", `
     <div class="fixed bottom-4 left-4 z-[3390]">
       <button id="discussionFabBtn" type="button" class="relative grid h-14 w-14 place-items-center rounded-full border border-white/25 bg-[#3F4766]/75 text-white shadow-[10px_10px_22px_rgba(16,23,40,0.45),-8px_-8px_18px_rgba(112,126,165,0.2)] backdrop-blur-xl transition hover:-translate-y-0.5" aria-label="Ouvrir la discussion">
         <i class="fa-solid fa-comments text-xl"></i>
@@ -461,7 +466,7 @@ export function renderPage2(user, options = {}) {
     </div>
   `);
 
-  document.body.insertAdjacentHTML("beforeend", `
+  pageShell.insertAdjacentHTML("beforeend", `
     <div id="agentSupportAlertWrap" class="hidden fixed bottom-4 right-4 z-[3395]">
       <button
         id="agentSupportAlertBtn"
@@ -477,7 +482,7 @@ export function renderPage2(user, options = {}) {
   `);
 
   if (consumeAuthSuccessNotice()) {
-    document.body.insertAdjacentHTML("beforeend", `
+    pageShell.insertAdjacentHTML("beforeend", `
       <div id="authSuccessToast" class="fixed top-4 left-1/2 z-[3500] -translate-x-1/2 rounded-2xl border border-emerald-300/40 bg-emerald-500/20 px-4 py-3 text-sm font-semibold text-emerald-100 shadow-[10px_10px_22px_rgba(14,36,28,0.45),-8px_-8px_18px_rgba(91,153,126,0.16)] backdrop-blur-xl">
         Connexion réussie.
       </div>

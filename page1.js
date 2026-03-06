@@ -71,6 +71,10 @@ function pageAuthDebug(event, data = {}) {
   }
 }
 
+function getAuthShell() {
+  return document.getElementById("domino-app-shell") || document.body;
+}
+
 function escapeAttr(text) {
   return String(text || "")
     .replace(/&/g, "&amp;")
@@ -627,7 +631,7 @@ async function handleAuthenticatedUser(user, explicitPromoCode = "") {
 }
 
 function renderAuthLoading() {
-  document.body.innerHTML = `
+  getAuthShell().innerHTML = `
     <div class="min-h-screen grid place-items-center bg-[#3f4766] text-white font-['Poppins']">
       <div class="rounded-3xl border border-white/15 bg-white/10 px-6 py-5 text-center shadow-[12px_12px_28px_rgba(25,30,44,0.42),-10px_-10px_24px_rgba(97,110,150,0.16)] backdrop-blur-md">
         <div class="text-base font-semibold tracking-wide">Connexion en cours...</div>
@@ -661,7 +665,7 @@ function renderPage1() {
     ? `<div id="authInfo" class="mt-2 min-h-5 text-xs ${authBootstrapTone === "success" ? "text-emerald-200" : authBootstrapTone === "error" ? "text-[#ffb0b0]" : "text-amber-200"}">${escapeAttr(authBootstrapMessage)}</div>`
     : `<div id="authInfo" class="mt-2 min-h-5 text-xs text-amber-200"></div>`;
 
-  document.body.innerHTML = `
+  getAuthShell().innerHTML = `
     <div id="appRoot" class="min-h-screen bg-[#3f4766] text-white font-['Poppins']">
       <div class="min-h-screen lg:grid lg:grid-cols-[1.05fr_0.95fr]">
         <section class="flex min-h-screen flex-col px-6 pb-6 pt-8 sm:px-10 lg:px-0 lg:pl-24 lg:pr-16 lg:pt-10">
