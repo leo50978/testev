@@ -1,5 +1,6 @@
 import { mountProfileModal } from "./profil.js";
-import { mountSoldeModal } from "./solde.js";
+import { mountSoldeModal, waitForBalanceHydration } from "./solde.js";
+import { syncPwaInstallPrompt } from "./pwa-install.js";
 import { ensureXchangeState, getXchangeState } from "./xchange.js";
 import {
   withButtonLoading,
@@ -13,6 +14,8 @@ const CHAT_COLLECTION = "globalChannelMessages";
 const SUPPORT_THREADS_COLLECTION = "supportThreads";
 const AUTH_SUCCESS_NOTICE_STORAGE_KEY = "domino_auth_success_notice_v1";
 const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
+const PAGE2_BOOTSTRAP_MIN_MS = 650;
+const PAGE2_BOOTSTRAP_TIMEOUT_MS = 2600;
 const DEFAULT_GAME_STAKE_OPTIONS = Object.freeze([
   Object.freeze({ id: "stake_100", stakeDoes: 100, rewardDoes: 300, enabled: true, sortOrder: 10 }),
   Object.freeze({ id: "stake_500", stakeDoes: 500, rewardDoes: 1500, enabled: false, sortOrder: 20 }),
@@ -25,9 +28,75 @@ let page2SupportThreadUnsub = null;
 let page2PresenceVisibilityBound = false;
 let page2PresenceUser = null;
 const profileBootstrapInFlightByUid = new Map();
+let page2BootstrapRunId = 0;
 
 function getPage2Shell() {
   return document.getElementById("domino-app-shell") || document.body;
+}
+
+function waitForMinimumDelay(ms = PAGE2_BOOTSTRAP_MIN_MS) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+}
+
+function withBootstrapTimeout(promise, timeoutMs = PAGE2_BOOTSTRAP_TIMEOUT_MS, fallbackValue = null) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const timer = window.setTimeout(() => done(fallbackValue), Math.max(300, Number(timeoutMs) || PAGE2_BOOTSTRAP_TIMEOUT_MS));
+    Promise.resolve(promise)
+      .then((value) => {
+        window.clearTimeout(timer);
+        done(value);
+      })
+      .catch(() => {
+        window.clearTimeout(timer);
+        done(fallbackValue);
+      });
+  });
+}
+
+async function runPage2BootstrapFlow({
+  runId,
+  user,
+  isAuthenticated,
+  hasConfirmedAuth,
+  stakeOptionsPromise,
+}) {
+  const minDelayPromise = waitForMinimumDelay(isAuthenticated ? PAGE2_BOOTSTRAP_MIN_MS : 180);
+  const stakePromise = withBootstrapTimeout(stakeOptionsPromise, PAGE2_BOOTSTRAP_TIMEOUT_MS, normalizeGameStakeOptions());
+  const profilePromise = hasConfirmedAuth
+    ? withBootstrapTimeout(ensureClientReferralBootstrap(user), PAGE2_BOOTSTRAP_TIMEOUT_MS, null)
+    : Promise.resolve(null);
+  const balancePromise = hasConfirmedAuth
+    ? withBootstrapTimeout(waitForBalanceHydration(user?.uid), PAGE2_BOOTSTRAP_TIMEOUT_MS, false)
+    : Promise.resolve(false);
+
+  if (isAuthenticated) {
+    showGlobalLoading("Préparation de votre espace...");
+  }
+
+  showGlobalLoading(isAuthenticated ? "Chargement des mises..." : "Chargement...");
+  await stakePromise;
+
+  if (hasConfirmedAuth) {
+    showGlobalLoading("Préparation du profil...");
+    await profilePromise;
+
+    showGlobalLoading("Synchronisation du solde...");
+    await balancePromise;
+  }
+
+  await minDelayPromise;
+  if (runId === page2BootstrapRunId) {
+    hideGlobalLoading();
+    syncPwaInstallPrompt({ enabled: true });
+  }
 }
 
 function safeInt(value) {
@@ -265,18 +334,28 @@ function initAgentSupportAlert(user) {
 }
 
 export function renderPage2(user, options = {}) {
-  hideGlobalLoading();
   stopPage2ChatWatchers();
   const pageShell = getPage2Shell();
+  const runId = ++page2BootstrapRunId;
   page2PresenceUser = user || null;
   const incomingUid = String(page2PresenceUser?.uid || "");
   const currentAuthUid = String(auth.currentUser?.uid || "");
   const hasConfirmedAuth = Boolean(incomingUid && currentAuthUid && incomingUid === currentAuthUid);
   const isOptimisticAuth = options?.optimisticAuth === true && !hasConfirmedAuth && Boolean(incomingUid);
   const isAuthenticated = Boolean(incomingUid);
+  const stakeOptionsPromise = loadPublicGameStakeOptions()
+    .then((options) => {
+      renderStakeOptions(options);
+      return options;
+    })
+    .catch((error) => {
+      console.warn("[GAME_STAKES] render fallback", error);
+      const fallback = normalizeGameStakeOptions();
+      renderStakeOptions(fallback);
+      return fallback;
+    });
 
   if (hasConfirmedAuth) {
-    void ensureClientReferralBootstrap(page2PresenceUser);
     touchClientPresence(page2PresenceUser);
   }
 
@@ -626,16 +705,6 @@ export function renderPage2(user, options = {}) {
     }).join("");
   };
 
-  renderStakeOptions();
-  loadPublicGameStakeOptions()
-    .then((options) => {
-      renderStakeOptions(options);
-    })
-    .catch((error) => {
-      console.warn("[GAME_STAKES] render fallback", error);
-      renderStakeOptions();
-    });
-
   if (startGameBtn) {
     startGameBtn.addEventListener("click", () => {
       if (!isAuthenticated) {
@@ -733,4 +802,11 @@ export function renderPage2(user, options = {}) {
   const effectiveUser = hasConfirmedAuth ? user : null;
   initDiscussionFab(effectiveUser);
   initAgentSupportAlert(effectiveUser);
+  void runPage2BootstrapFlow({
+    runId,
+    user,
+    isAuthenticated,
+    hasConfirmedAuth,
+    stakeOptionsPromise,
+  });
 }

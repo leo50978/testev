@@ -1,7 +1,8 @@
 {
   "name": "Dominoes Lakay",
   "short_name": "Dominoes",
-  "description": "Plateforme web de domino en ligne pour jouer contre des amis ou des robots.",
+  "description": "Plateforme web de domino en ligne entre joueurs avec mise, acces rapide et interface optimisee.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "icons": [

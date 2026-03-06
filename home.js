@@ -1,12 +1,14 @@
 import "./firebase-init.js";
 import { auth, watchAuthState } from "./auth.js";
 import { renderPage2 } from "./page2.js";
+import { registerPwaSupport } from "./pwa-install.js";
 
 const AUTH_SUCCESS_NOTICE_STORAGE_KEY = "domino_auth_success_notice_v1";
 let lastRenderedStateKey = "__initial__";
 let homeAuthBootstrapTimer = null;
 let homeInitialAuthResolved = false;
 const HOME_AUTH_BOOTSTRAP_TIMEOUT_MS = 900;
+const HOME_AUTH_SUCCESS_TIMEOUT_MS = 2600;
 
 function homeDebug(event, data = {}) {
   try {
@@ -53,11 +55,11 @@ function renderHomeFromAuth(user, options = {}) {
   renderPage2(user || null, { optimisticAuth: optimistic });
 }
 
-function renderHomeLoading() {
+function renderHomeLoading(message = "Chargement...") {
   getHomeShell().innerHTML = `
     <div class="min-h-screen grid place-items-center bg-[#3F4766] text-white font-['Poppins']">
       <div class="rounded-3xl border border-white/15 bg-white/10 px-6 py-5 text-center shadow-[12px_12px_28px_rgba(25,30,44,0.42),-10px_-10px_24px_rgba(97,110,150,0.16)] backdrop-blur-md">
-        <div class="text-sm font-semibold tracking-wide">Chargement...</div>
+        <div class="text-sm font-semibold tracking-wide">${message}</div>
       </div>
     </div>
   `;
@@ -70,6 +72,7 @@ function clearHomeAuthBootstrapTimer() {
 }
 
 homeDebug("bootstrap:start");
+registerPwaSupport();
 const immediateUser = auth.currentUser || null;
 if (immediateUser?.uid) {
   homeDebug("bootstrap:currentUserImmediate", { uid: String(immediateUser.uid || "") });
@@ -79,7 +82,7 @@ if (immediateUser?.uid) {
   const successNotice = readRecentAuthSuccessNotice();
   if (successNotice) {
     homeDebug("bootstrap:optimisticAuthRender", { successType: String(successNotice?.type || "") });
-    renderHomeFromAuth({ uid: "__pending_auth__", email: "" }, { optimistic: true, force: true });
+    renderHomeLoading("Connexion réussie. Préparation de votre espace...");
   } else {
     homeDebug("bootstrap:waitFirstAuthState");
     renderHomeLoading();
@@ -90,7 +93,7 @@ if (immediateUser?.uid) {
     homeDebug("bootstrap:timeoutRenderGuest", { timeoutMs: HOME_AUTH_BOOTSTRAP_TIMEOUT_MS });
     homeInitialAuthResolved = true;
     renderHomeFromAuth(null, { optimistic: false, force: true });
-  }, HOME_AUTH_BOOTSTRAP_TIMEOUT_MS);
+  }, successNotice ? HOME_AUTH_SUCCESS_TIMEOUT_MS : HOME_AUTH_BOOTSTRAP_TIMEOUT_MS);
 }
 
 watchAuthState((user) => {

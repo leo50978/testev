@@ -16,6 +16,57 @@ let stopWithdrawalsListener = null;
 let cachedOrders = [];
 let cachedWithdrawals = [];
 const MIN_DEPOSIT_HTG = 25;
+let balanceHydrationSession = {
+  uid: "",
+  ordersReady: false,
+  withdrawalsReady: false,
+  promise: null,
+  resolve: null,
+};
+
+function ensureBalanceHydrationSession(uid) {
+  const safeUid = String(uid || "").trim();
+  if (!safeUid) return null;
+  if (balanceHydrationSession.uid === safeUid && balanceHydrationSession.promise) {
+    return balanceHydrationSession;
+  }
+  balanceHydrationSession = {
+    uid: safeUid,
+    ordersReady: false,
+    withdrawalsReady: false,
+    promise: null,
+    resolve: null,
+  };
+  balanceHydrationSession.promise = new Promise((resolve) => {
+    balanceHydrationSession.resolve = resolve;
+  });
+  return balanceHydrationSession;
+}
+
+function markBalanceHydrationReady(kind, uid) {
+  const session = ensureBalanceHydrationSession(uid);
+  if (!session) return;
+  if (kind === "orders") session.ordersReady = true;
+  if (kind === "withdrawals") session.withdrawalsReady = true;
+  if (session.ordersReady && session.withdrawalsReady && typeof session.resolve === "function") {
+    const resolve = session.resolve;
+    session.resolve = null;
+    resolve(true);
+  }
+}
+
+export async function waitForBalanceHydration(uid = auth.currentUser?.uid, timeoutMs = 2200) {
+  const session = ensureBalanceHydrationSession(uid);
+  if (!session) return false;
+  if (session.ordersReady && session.withdrawalsReady) return true;
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(false), Math.max(300, Number(timeoutMs) || 2200));
+    session.promise.then(() => {
+      window.clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
 
 function formatAmount(value) {
   const amount = Number(value || 0);
@@ -271,6 +322,7 @@ function bindOrdersActions() {
 function attachOrdersListener() {
   const user = auth.currentUser;
   if (!user) return;
+  ensureBalanceHydrationSession(user.uid);
 
   if (stopOrdersListener) {
     stopOrdersListener();
@@ -296,6 +348,7 @@ function attachOrdersListener() {
     }
     cachedOrders = orders;
     refreshBalanceFromCaches();
+    markBalanceHydrationReady("orders", user.uid);
 
     // Cache automatiquement les commandes approuvées côté client (sans suppression DB)
     const approvedVisible = orders.filter((o) => o.status === "approved" && !o.userHiddenByClient);
@@ -315,6 +368,7 @@ function attachOrdersListener() {
 function attachWithdrawalsListener() {
   const user = auth.currentUser;
   if (!user) return;
+  ensureBalanceHydrationSession(user.uid);
 
   if (stopWithdrawalsListener) {
     stopWithdrawalsListener();
@@ -341,6 +395,7 @@ function attachWithdrawalsListener() {
     }
     cachedWithdrawals = withdrawals;
     refreshBalanceFromCaches();
+    markBalanceHydrationReady("withdrawals", user.uid);
 
     const approvedVisible = withdrawals.filter((o) => o.status === "approved" && !o.userHiddenByClient);
     for (const item of approvedVisible) {
