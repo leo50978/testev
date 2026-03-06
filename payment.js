@@ -283,7 +283,7 @@ class PaymentModal {
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
             <div style="display: flex; align-items: center; gap: 1rem;">
               ${this.currentStep > 0 ? `
-                <button class="back-step" style="
+                <button class="back-step payment-icon-btn" style="
                   background: none;
                   border: none;
                   font-size: 1.2rem;
@@ -297,7 +297,7 @@ class PaymentModal {
                   justify-content: center;
                   border-radius: 50%;
                   transition: all 0.2s;
-                " onmouseover="this.style.background='rgba(198,167,94,0.1)'; this.style.color='#C6A75E'" onmouseout="this.style.background='transparent'; this.style.color='#8B7E6B'">
+                ">
                   <i class="fas fa-arrow-left"></i>
                 </button>
               ` : ''}
@@ -310,7 +310,7 @@ class PaymentModal {
                 Paiement sécurisé
               </h2>
             </div>
-            <button class="close-payment" style="
+            <button class="close-payment payment-icon-btn" style="
               background: none;
               border: none;
               font-size: 1.5rem;
@@ -324,7 +324,7 @@ class PaymentModal {
               align-items: center;
               justify-content: center;
               border-radius: 50%;
-            " onmouseover="this.style.background='rgba(198,167,94,0.1)'; this.style.color='#C6A75E'" onmouseout="this.style.background='transparent'; this.style.color='#8B7E6B'">
+            ">
               <i class="fas fa-times"></i>
             </button>
           </div>
@@ -350,6 +350,11 @@ class PaymentModal {
         .payment-theme-${this.uniqueId} h4,
         .payment-theme-${this.uniqueId} label {
           color: #ffffff !important;
+        }
+
+        .payment-theme-${this.uniqueId} .payment-icon-btn:hover {
+          background: rgba(198, 167, 94, 0.1) !important;
+          color: #C6A75E !important;
         }
         
         @keyframes paymentSlideIn {
@@ -607,7 +612,7 @@ class PaymentModal {
           box-shadow: inset 4px 4px 9px rgba(255,255,255,0.05), inset -4px -4px 9px rgba(8,13,24,0.2);
         ">
           ${method.image ? 
-            `<img src="${safeImagePath}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none';this.parentElement.innerHTML='<i class=\'fas fa-money-bill-wave\' style=\'font-size: 1.5rem; color: #C6A75E;\'></i>';">` : 
+            `<img src="${safeImagePath}" data-fallback-icon="fa-money-bill-wave" style="width: 100%; height: 100%; object-fit: cover;">` :
             `<i class="fas fa-money-bill-wave" style="font-size: 1.5rem; color: #C6A75E;"></i>`
           }
         </div>
@@ -728,7 +733,7 @@ class PaymentModal {
               overflow: hidden;
             ">
               ${this.selectedMethod.image ? 
-                `<img src="${safeMethodImage}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none';this.parentElement.innerHTML='<i class=\'fas fa-university\' style=\'font-size: 1.5rem; color: #C6A75E;\'></i>';">` : 
+                `<img src="${safeMethodImage}" data-fallback-icon="fa-university" style="width: 100%; height: 100%; object-fit: cover;">` :
                 `<i class="fas fa-university" style="font-size: 1.5rem; color: #C6A75E;"></i>`
               }
             </div>
@@ -770,7 +775,7 @@ class PaymentModal {
               border-radius: 0.5rem;
             ">
               <p style="font-size: 0.85rem; color: #8B7E6B; margin-bottom: 0.5rem;">Scannez le QR code</p>
-              <img src="${safeQrCodePath}" style="width: 150px; height: 150px; object-fit: contain;" onerror="this.style.display='none'">
+              <img src="${safeQrCodePath}" data-hide-on-error="1" style="width: 150px; height: 150px; object-fit: contain;">
             </div>
           ` : ''}
         </div>
@@ -909,6 +914,8 @@ class PaymentModal {
   }
   
   attachEvents() {
+    this.bindAssetFallbacks();
+
     const closeBtn = this.modal.querySelector('.close-payment');
     if (closeBtn) {
       closeBtn.addEventListener('click', () => this.close());
@@ -935,6 +942,40 @@ class PaymentModal {
       if (e.key === 'Escape') {
         this.close();
       }
+    });
+  }
+
+  bindAssetFallbacks() {
+    if (!this.modal) return;
+
+    this.modal.querySelectorAll('img[data-hide-on-error="1"]').forEach((img) => {
+      if (img.dataset.errorBound === '1') return;
+      img.dataset.errorBound = '1';
+      img.addEventListener('error', () => {
+        img.style.display = 'none';
+      });
+    });
+
+    this.modal.querySelectorAll('img[data-fallback-icon]').forEach((img) => {
+      if (img.dataset.errorBound === '1') return;
+      img.dataset.errorBound = '1';
+      img.addEventListener('error', () => {
+        const parent = img.parentElement;
+        if (!parent) {
+          img.style.display = 'none';
+          return;
+        }
+        if (parent.dataset.fallbackApplied === '1') return;
+        parent.dataset.fallbackApplied = '1';
+        while (parent.firstChild) {
+          parent.removeChild(parent.firstChild);
+        }
+        const icon = document.createElement('i');
+        icon.className = `fas ${img.dataset.fallbackIcon || 'fa-image'}`;
+        icon.style.fontSize = '1.5rem';
+        icon.style.color = '#C6A75E';
+        parent.appendChild(icon);
+      });
     });
   }
   
@@ -1239,7 +1280,7 @@ class PaymentModal {
         titleDiv.innerHTML = `
           <div style="display: flex; align-items: center; gap: 1rem;">
             ${this.currentStep > 0 && this.currentStep < (this.steps?.length || 0) && !this.isSubmitted ? `
-              <button class="back-step" style="
+              <button class="back-step payment-icon-btn" style="
                 background: none;
                 border: none;
                 font-size: 1.2rem;
@@ -1253,7 +1294,7 @@ class PaymentModal {
                 justify-content: center;
                 border-radius: 50%;
                 transition: all 0.2s;
-              " onmouseover="this.style.background='rgba(198,167,94,0.1)'; this.style.color='#C6A75E'" onmouseout="this.style.background='transparent'; this.style.color='#8B7E6B'">
+              ">
                 <i class="fas fa-arrow-left"></i>
               </button>
             ` : ''}
@@ -1266,7 +1307,7 @@ class PaymentModal {
               Paiement sécurisé
             </h2>
           </div>
-          <button class="close-payment" style="
+          <button class="close-payment payment-icon-btn" style="
             background: none;
             border: none;
             font-size: 1.5rem;
@@ -1280,7 +1321,7 @@ class PaymentModal {
             align-items: center;
             justify-content: center;
             border-radius: 50%;
-          " onmouseover="this.style.background='rgba(198,167,94,0.1)'; this.style.color='#C6A75E'" onmouseout="this.style.background='transparent'; this.style.color='#8B7E6B'">
+          ">
             <i class="fas fa-times"></i>
           </button>
         `;

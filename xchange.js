@@ -24,6 +24,17 @@ function safeSignedInt(value) {
   return Number.isFinite(n) ? Math.trunc(n) : 0;
 }
 
+function bindHideOnErrorImages(root) {
+  if (!root) return;
+  root.querySelectorAll('img[data-hide-on-error="1"]').forEach((img) => {
+    if (img.dataset.errorBound === "1") return;
+    img.dataset.errorBound = "1";
+    img.addEventListener("error", () => {
+      img.style.display = "none";
+    });
+  });
+}
+
 function defaultWallet() {
   return {
     does: 0,
@@ -360,7 +371,7 @@ function ensureXchangeModal() {
 
       <div class="mt-4 rounded-2xl border border-white/20 bg-white/10 p-4 text-sm text-white/90">
         <div class="flex items-center gap-2">
-          <img src="./does.png" alt="Does" class="h-5 w-5 rounded-full object-cover" onerror="this.style.display='none'" />
+          <img src="./does.png" alt="Does" class="h-5 w-5 rounded-full object-cover" data-hide-on-error="1" />
           <p id="xchangePreviewText">Vous recevrez: <span id="xchangePreview" class="font-semibold text-white">0</span> Does</p>
         </div>
       </div>
@@ -374,6 +385,7 @@ function ensureXchangeModal() {
   `;
 
   document.body.appendChild(overlay);
+  bindHideOnErrorImages(overlay);
 
   const panel = overlay.querySelector("#xchangePanel");
   const closeBtn = overlay.querySelector("#xchangeClose");

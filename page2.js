@@ -1,7 +1,5 @@
-import { mountProfileModal } from "./profil.js";
-import { mountSoldeModal, waitForBalanceHydration } from "./solde.js";
 import { syncPwaInstallPrompt } from "./pwa-install.js";
-import { ensureXchangeState, getXchangeState } from "./xchange.js";
+import { ensureAnimeRuntime } from "./anime-loader.js";
 import {
   withButtonLoading,
   showGlobalLoading,
@@ -29,6 +27,132 @@ let page2PresenceVisibilityBound = false;
 let page2PresenceUser = null;
 const profileBootstrapInFlightByUid = new Map();
 let page2BootstrapRunId = 0;
+let profileModulePromise = null;
+let soldeModulePromise = null;
+let xchangeModulePromise = null;
+let profileUiReadyRunId = 0;
+let soldeUiReadyRunId = 0;
+let profileUiReadyPromise = null;
+let soldeUiReadyPromise = null;
+
+async function runPage2Animations() {
+  try {
+    const anime = await ensureAnimeRuntime();
+    if (!anime) return;
+
+    anime({
+      targets: "#page2Root",
+      opacity: [0, 1],
+      duration: 550,
+      easing: "easeOutQuad",
+    });
+
+    anime({
+      targets: "header, section, #startGameBtn",
+      translateY: [16, 0],
+      opacity: [0, 1],
+      delay: anime.stagger(90, { start: 130 }),
+      duration: 520,
+      easing: "easeOutCubic",
+    });
+  } catch (error) {
+    console.warn("[PAGE2] animation runtime unavailable", error);
+  }
+}
+
+async function loadProfileModule() {
+  if (!profileModulePromise) {
+    profileModulePromise = import("./profil.js");
+  }
+  return profileModulePromise;
+}
+
+async function loadSoldeModule() {
+  if (!soldeModulePromise) {
+    soldeModulePromise = import("./solde.js");
+  }
+  return soldeModulePromise;
+}
+
+async function loadXchangeModule() {
+  if (!xchangeModulePromise) {
+    xchangeModulePromise = import("./xchange.js");
+  }
+  return xchangeModulePromise;
+}
+
+function scheduleNonCriticalTask(runId, task, delayMs = 240) {
+  const execute = () => {
+    if (runId !== page2BootstrapRunId) return;
+    Promise.resolve()
+      .then(task)
+      .catch((error) => {
+        console.warn("[PAGE2] deferred task failed", error);
+      });
+  };
+
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(execute, { timeout: Math.max(600, Number(delayMs) + 900 || 1200) });
+    return;
+  }
+
+  window.setTimeout(execute, Math.max(80, Number(delayMs) || 240));
+}
+
+async function ensureProfileUiReady(triggerSelector = "#p2Profile") {
+  if (profileUiReadyRunId === page2BootstrapRunId && profileUiReadyPromise) {
+    return profileUiReadyPromise;
+  }
+  profileUiReadyRunId = page2BootstrapRunId;
+  profileUiReadyPromise = loadProfileModule().then((profileModule) => {
+    profileModule.mountProfileModal({ triggerSelector });
+    const trigger = document.querySelector(triggerSelector);
+    if (trigger) trigger.dataset.modalBootstrapReady = "1";
+    return profileModule;
+  });
+  return profileUiReadyPromise;
+}
+
+async function ensureSoldeUiReady(triggerSelector = "#soldBadge") {
+  if (soldeUiReadyRunId === page2BootstrapRunId && soldeUiReadyPromise) {
+    return soldeUiReadyPromise;
+  }
+  soldeUiReadyRunId = page2BootstrapRunId;
+  soldeUiReadyPromise = loadSoldeModule().then((soldeModule) => {
+    soldeModule.mountSoldeModal({ triggerSelector });
+    const trigger = document.querySelector(triggerSelector);
+    if (trigger) trigger.dataset.modalBootstrapReady = "1";
+    return soldeModule;
+  });
+  return soldeUiReadyPromise;
+}
+
+function bindDeferredModalTrigger(trigger, ensureReady, loadingMessage) {
+  if (!trigger || trigger.dataset.deferredModalBound === "1") return;
+  trigger.dataset.deferredModalBound = "1";
+
+  trigger.addEventListener("click", (event) => {
+    if (trigger.dataset.modalBootstrapReady === "1") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") {
+      event.stopImmediatePropagation();
+    }
+    showGlobalLoading(loadingMessage);
+    Promise.resolve()
+      .then(() => ensureReady())
+      .then(() => {
+        hideGlobalLoading();
+        window.setTimeout(() => {
+          trigger.click();
+        }, 0);
+      })
+      .catch((error) => {
+        console.error("[PAGE2] deferred modal bootstrap error", error);
+        hideGlobalLoading();
+      });
+  }, true);
+}
 
 function getPage2Shell() {
   return document.getElementById("domino-app-shell") || document.body;
@@ -66,23 +190,22 @@ async function runPage2BootstrapFlow({
   user,
   isAuthenticated,
   hasConfirmedAuth,
-  stakeOptionsPromise,
 }) {
   const minDelayPromise = waitForMinimumDelay(isAuthenticated ? PAGE2_BOOTSTRAP_MIN_MS : 180);
-  const stakePromise = withBootstrapTimeout(stakeOptionsPromise, PAGE2_BOOTSTRAP_TIMEOUT_MS, normalizeGameStakeOptions());
   const profilePromise = hasConfirmedAuth
     ? withBootstrapTimeout(ensureClientReferralBootstrap(user), PAGE2_BOOTSTRAP_TIMEOUT_MS, null)
     : Promise.resolve(null);
   const balancePromise = hasConfirmedAuth
-    ? withBootstrapTimeout(waitForBalanceHydration(user?.uid), PAGE2_BOOTSTRAP_TIMEOUT_MS, false)
+    ? withBootstrapTimeout(
+      ensureSoldeUiReady("#soldBadge").then((soldeModule) => soldeModule.waitForBalanceHydration(user?.uid)),
+      PAGE2_BOOTSTRAP_TIMEOUT_MS,
+      false
+    )
     : Promise.resolve(false);
 
   if (isAuthenticated) {
     showGlobalLoading("Préparation de votre espace...");
   }
-
-  showGlobalLoading(isAuthenticated ? "Chargement des mises..." : "Chargement...");
-  await stakePromise;
 
   if (hasConfirmedAuth) {
     showGlobalLoading("Préparation du profil...");
@@ -343,17 +466,6 @@ export function renderPage2(user, options = {}) {
   const hasConfirmedAuth = Boolean(incomingUid && currentAuthUid && incomingUid === currentAuthUid);
   const isOptimisticAuth = options?.optimisticAuth === true && !hasConfirmedAuth && Boolean(incomingUid);
   const isAuthenticated = Boolean(incomingUid);
-  const stakeOptionsPromise = loadPublicGameStakeOptions()
-    .then((options) => {
-      renderStakeOptions(options);
-      return options;
-    })
-    .catch((error) => {
-      console.warn("[GAME_STAKES] render fallback", error);
-      const fallback = normalizeGameStakeOptions();
-      renderStakeOptions(fallback);
-      return fallback;
-    });
 
   if (hasConfirmedAuth) {
     touchClientPresence(page2PresenceUser);
@@ -380,12 +492,12 @@ export function renderPage2(user, options = {}) {
     <div id="page2Root" class="min-h-[100dvh] bg-[#3F4766] px-0 pt-0 pb-[max(2rem,env(safe-area-inset-bottom))] text-white font-['Poppins'] overflow-x-hidden">
       <div class="w-full">
         <section class="relative h-[80dvh] min-h-[420px] w-full overflow-hidden rounded-none">
-          <img src="hero.jpg" alt="Hero" class="h-full w-full object-cover" />
+          <img src="hero.jpg" alt="Hero" width="600" height="600" fetchpriority="high" decoding="async" class="h-full w-full object-cover" />
           <div class="absolute inset-0 bg-[#3F4766]/55 backdrop-blur-[1px]"></div>
           <header class="fixed inset-x-0 top-3 z-40 px-3 sm:top-4 sm:px-5">
             <div class="mx-auto flex w-full max-w-[1080px] items-center justify-between px-1 py-1 sm:px-2 sm:py-1.5">
               <div class="flex items-center">
-                <img id="p2Logo" src="./logo.png" alt="Logo" class="h-auto w-[128px] max-w-full object-contain sm:w-[148px]" />
+                <img id="p2Logo" src="./logo.png" alt="Logo" width="500" height="500" decoding="async" class="h-auto w-[128px] max-w-full object-contain sm:w-[148px]" />
                 <span id="p2LogoFallback" class="hidden text-2xl font-semibold tracking-tight text-white/95">Dominoes</span>
               </div>
               <div class="flex items-center gap-2 sm:gap-3">
@@ -572,23 +684,7 @@ export function renderPage2(user, options = {}) {
     }, 2600);
   }
 
-  if (window.anime) {
-    anime({
-      targets: "#page2Root",
-      opacity: [0, 1],
-      duration: 550,
-      easing: "easeOutQuad",
-    });
-
-    anime({
-      targets: "header, section, #startGameBtn",
-      translateY: [16, 0],
-      opacity: [0, 1],
-      delay: anime.stagger(90, { start: 130 }),
-      duration: 520,
-      easing: "easeOutCubic",
-    });
-  }
+  void runPage2Animations();
 
   const logo = document.getElementById("p2Logo");
   const logoFallback = document.getElementById("p2LogoFallback");
@@ -705,6 +801,25 @@ export function renderPage2(user, options = {}) {
     }).join("");
   };
 
+  let stakeOptionsHydrationPromise = null;
+  const ensureStakeOptionsLoaded = () => {
+    if (stakeOptionsHydrationPromise) return stakeOptionsHydrationPromise;
+    stakeOptionsHydrationPromise = loadPublicGameStakeOptions()
+      .then((options) => {
+        renderStakeOptions(options);
+        return options;
+      })
+      .catch((error) => {
+        console.warn("[GAME_STAKES] render fallback", error);
+        const fallback = normalizeGameStakeOptions();
+        renderStakeOptions(fallback);
+        return fallback;
+      });
+    return stakeOptionsHydrationPromise;
+  };
+
+  renderStakeOptions(currentStakeOptions);
+
   if (startGameBtn) {
     startGameBtn.addEventListener("click", () => {
       if (!isAuthenticated) {
@@ -719,6 +834,7 @@ export function renderPage2(user, options = {}) {
         }, 1600);
         return;
       }
+      void ensureStakeOptionsLoaded();
       openStakeSelection();
     });
   }
@@ -755,8 +871,9 @@ export function renderPage2(user, options = {}) {
 
       const stakeAmount = Number(btn.getAttribute("data-stake") || 100);
       await withButtonLoading(btn, async () => {
-        await ensureXchangeState(user?.uid);
-        const state = getXchangeState(window.__userBaseBalance || window.__userBalance || 0, user?.uid);
+        const xchangeModule = await loadXchangeModule();
+        await xchangeModule.ensureXchangeState(user?.uid);
+        const state = xchangeModule.getXchangeState(window.__userBaseBalance || window.__userBalance || 0, user?.uid);
         if ((state?.does || 0) < stakeAmount) {
           closeStakeSelection();
           if (doesRequiredOverlay) {
@@ -795,18 +912,22 @@ export function renderPage2(user, options = {}) {
     });
   }
 
-  if (hasConfirmedAuth) {
-    mountProfileModal({ triggerSelector: "#p2Profile" });
-    mountSoldeModal({ triggerSelector: "#soldBadge" });
-  }
+  bindDeferredModalTrigger(profileBtn, () => ensureProfileUiReady("#p2Profile"), "Ouverture du profil...");
+  bindDeferredModalTrigger(soldBadgeBtn, () => ensureSoldeUiReady("#soldBadge"), "Chargement du solde...");
+
   const effectiveUser = hasConfirmedAuth ? user : null;
-  initDiscussionFab(effectiveUser);
-  initAgentSupportAlert(effectiveUser);
+  scheduleNonCriticalTask(runId, () => ensureStakeOptionsLoaded(), 360);
+  scheduleNonCriticalTask(runId, () => {
+    initDiscussionFab(effectiveUser);
+    initAgentSupportAlert(effectiveUser);
+  }, 460);
+  if (hasConfirmedAuth) {
+    scheduleNonCriticalTask(runId, () => ensureProfileUiReady("#p2Profile"), 320);
+  }
   void runPage2BootstrapFlow({
     runId,
     user,
     isAuthenticated,
     hasConfirmedAuth,
-    stakeOptionsPromise,
   });
 }

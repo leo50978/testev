@@ -33,6 +33,17 @@ function formatAmount(value) {
   }).format(amount);
 }
 
+function bindHideOnErrorImages(root) {
+  if (!root) return;
+  root.querySelectorAll('img[data-hide-on-error="1"]').forEach((img) => {
+    if (img.dataset.errorBound === "1") return;
+    img.dataset.errorBound = "1";
+    img.addEventListener("error", () => {
+      img.style.display = "none";
+    });
+  });
+}
+
 function safeInt(value) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
@@ -262,7 +273,7 @@ function ensureRetraitModal() {
       <button type="button" data-method-id="${escapeHtml(m.id)}" class="retrait-method w-full rounded-xl border border-white/20 bg-white/10 p-3 text-left text-white transition hover:bg-white/15">
         <div class="flex items-center gap-3">
           ${imagePath ? `
-            <img src="${escapeHtml(imagePath)}" alt="${escapeHtml(m.name || "Méthode")}" class="h-10 w-10 rounded-xl object-cover border border-white/15 bg-white/10" onerror="this.style.display='none'">
+            <img src="${escapeHtml(imagePath)}" alt="${escapeHtml(m.name || "Méthode")}" class="h-10 w-10 rounded-xl object-cover border border-white/15 bg-white/10" data-hide-on-error="1">
           ` : `
             <div class="grid h-10 w-10 place-items-center rounded-xl border border-white/15 bg-white/10">
               <i class="fa-solid fa-wallet text-white/80"></i>
@@ -273,6 +284,7 @@ function ensureRetraitModal() {
       </button>
     `;
     }).join("");
+    bindHideOnErrorImages(methodsEl);
 
     methodsEl.querySelectorAll(".retrait-method").forEach((btn) => {
       btn.addEventListener("click", () => {

@@ -57,6 +57,17 @@ function formatAmount(value) {
   }).format(amount);
 }
 
+function bindHideOnErrorImages(root) {
+  if (!root) return;
+  root.querySelectorAll('img[data-hide-on-error="1"]').forEach((img) => {
+    if (img.dataset.errorBound === "1") return;
+    img.dataset.errorBound = "1";
+    img.addEventListener("error", () => {
+      img.style.display = "none";
+    });
+  });
+}
+
 function clearProfileRealtimeWatchers() {
   if (profileClientUnsub) {
     profileClientUnsub();
@@ -171,7 +182,7 @@ function ensureProfileModal() {
         <div class="mt-4 rounded-2xl border border-white/20 bg-white/10 p-4 shadow-[8px_8px_18px_rgba(19,25,40,0.34),-6px_-6px_14px_rgba(111,126,164,0.2)]">
           <p class="text-[11px] uppercase tracking-[0.14em] text-white/65">Xchange prioritaire</p>
           <div class="mt-2 flex items-center gap-2">
-            <img src="./does.png" alt="Does" class="h-6 w-6 rounded-full object-cover" onerror="this.style.display='none'" />
+            <img src="./does.png" alt="Does" class="h-6 w-6 rounded-full object-cover" data-hide-on-error="1" />
             <p class="text-sm font-semibold text-white"><span id="profileDoesTotal">0</span> Does</p>
           </div>
           <p id="profileExchanged" class="mt-1 text-xs text-white/70">Échangé: 0 HTG</p>
@@ -192,7 +203,7 @@ function ensureProfileModal() {
             </button>
             <button id="profileXchangeBtn" type="button" class="mt-2 inline-flex w-full items-center justify-between rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-sm font-semibold text-white shadow-[8px_8px_18px_rgba(19,25,40,0.34),-6px_-6px_14px_rgba(111,126,164,0.2)]">
               <span class="inline-flex items-center gap-2">
-                <img src="./does.png" alt="Does" class="h-4 w-4 rounded-full object-cover" onerror="this.style.display='none'" />
+                <img src="./does.png" alt="Does" class="h-4 w-4 rounded-full object-cover" data-hide-on-error="1" />
                 Xchange en crypto
               </span>
               <i class="fa-solid fa-coins text-xs text-white/80"></i>
@@ -237,6 +248,7 @@ function ensureProfileModal() {
   `;
 
   document.body.appendChild(overlay);
+  bindHideOnErrorImages(overlay);
 
   const closeBtn = overlay.querySelector("#profileModalClose");
   const panel = overlay.querySelector("#profileModalPanel");

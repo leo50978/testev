@@ -19,7 +19,7 @@ import {
   logoutCurrentUser,
   watchAuthState,
 } from "./auth.js";
-import { renderPage2 } from "./page2.js";
+import { ensureAnimeRuntime } from "./anime-loader.js";
 import {
   withButtonLoading,
   showGlobalLoading,
@@ -51,6 +51,7 @@ const APP_HOME_ROUTE = "./index.html";
 const TERMS_ROUTE = "./conditions-utilisation.html";
 const PRIVACY_ROUTE = "./politique-confidentialite.html";
 const LEGAL_ROUTE = "./mentions-legales.html";
+let page2ModulePromise = null;
 
 function pageAuthDebug(event, data = {}) {
   try {
@@ -73,6 +74,13 @@ function pageAuthDebug(event, data = {}) {
 
 function getAuthShell() {
   return document.getElementById("domino-app-shell") || document.body;
+}
+
+async function ensurePage2Module() {
+  if (!page2ModulePromise) {
+    page2ModulePromise = import("./page2.js");
+  }
+  return page2ModulePromise;
 }
 
 function escapeAttr(text) {
@@ -514,8 +522,17 @@ function redirectToHomeApp(user) {
   });
   if (onHomePage) {
     pageAuthDebug("redirectToHomeApp:renderPage2Inline");
-    hideGlobalLoading();
-    renderPage2(user || auth.currentUser);
+    void ensurePage2Module()
+      .then(({ renderPage2 }) => {
+        hideGlobalLoading();
+        renderPage2(user || auth.currentUser);
+      })
+      .catch((error) => {
+        pageAuthDebug("redirectToHomeApp:renderPage2InlineError", {
+          error: String(error?.message || error),
+        });
+        window.location.replace(APP_HOME_ROUTE);
+      });
     return;
   }
   pageAuthDebug("redirectToHomeApp:replace");
@@ -1147,8 +1164,15 @@ if (auth.currentUser) {
   renderPage1();
 }
 
-function animatePage1() {
-  if (!window.anime) return;
+async function animatePage1() {
+  let anime = null;
+  try {
+    anime = await ensureAnimeRuntime();
+  } catch (error) {
+    console.warn("[PAGE1] animation runtime unavailable", error);
+    return;
+  }
+  if (!anime) return;
 
   anime({
     targets: "#appRoot",
