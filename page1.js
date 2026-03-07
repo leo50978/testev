@@ -862,11 +862,20 @@ function bindPage1Events() {
   const togglePasswordBtn = document.getElementById("togglePasswordBtn");
   const togglePasswordConfirmBtn = document.getElementById("togglePasswordConfirmBtn");
   const promoCodeInput = document.getElementById("promoCodeInput");
-  const signupAgeCheckbox = document.getElementById("signupAgeCheckbox");
-  const signupTermsCheckbox = document.getElementById("signupTermsCheckbox");
   const forgotPasswordBtn = document.getElementById("forgotPasswordBtn");
   const forgotPasswordStatus = document.getElementById("forgotPasswordStatus");
   const discussionFabBtn = document.getElementById("loginDiscussionFabBtn");
+
+  const getSignupConsentState = () => {
+    const ageCheckbox = document.getElementById("signupAgeCheckbox");
+    const termsCheckbox = document.getElementById("signupTermsCheckbox");
+    return {
+      ageCheckbox,
+      termsCheckbox,
+      ageAccepted: ageCheckbox?.checked === true,
+      termsAccepted: termsCheckbox?.checked === true,
+    };
+  };
 
   const setForgotPasswordStatus = (text = "", tone = "neutral") => {
     if (!forgotPasswordStatus) return;
@@ -953,11 +962,12 @@ function bindPage1Events() {
       if (errorEl) errorEl.textContent = "Le mot de passe de confirmation ne correspond pas.";
       return;
     }
-    if (authMode === "signup" && signupAgeCheckbox?.checked !== true) {
+    const signupConsent = authMode === "signup" ? getSignupConsentState() : null;
+    if (authMode === "signup" && signupConsent?.ageAccepted !== true) {
       if (errorEl) errorEl.textContent = "Tu dois confirmer que tu as 18 ans ou plus.";
       return;
     }
-    if (authMode === "signup" && signupTermsCheckbox?.checked !== true) {
+    if (authMode === "signup" && signupConsent?.termsAccepted !== true) {
       if (errorEl) errorEl.textContent = "Tu dois accepter les conditions d'utilisation pour créer un compte.";
       return;
     }
@@ -1015,7 +1025,8 @@ function bindPage1Events() {
     oneClickAuthBtn.dataset.bound = "1";
     oneClickAuthBtn.addEventListener("click", () => {
       const errorEl = document.getElementById("authError");
-      if (signupAgeCheckbox?.checked !== true || signupTermsCheckbox?.checked !== true) {
+      const signupConsent = getSignupConsentState();
+      if (signupConsent.ageAccepted !== true || signupConsent.termsAccepted !== true) {
         if (errorEl) errorEl.textContent = "Tu dois cocher les 2 cases (18+ et conditions) avant de créer un compte.";
         return;
       }
@@ -1072,7 +1083,8 @@ function bindPage1Events() {
       const promoCode = normalizeCode(promoCodeInput?.value || "");
 
       if (oneClickErrorEl) oneClickErrorEl.textContent = "";
-      if (signupAgeCheckbox?.checked !== true || signupTermsCheckbox?.checked !== true) {
+      const signupConsent = getSignupConsentState();
+      if (signupConsent.ageAccepted !== true || signupConsent.termsAccepted !== true) {
         if (oneClickErrorEl) oneClickErrorEl.textContent = "Tu dois cocher les 2 cases (18+ et conditions) pour t'inscrire.";
         return;
       }

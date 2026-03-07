@@ -115,6 +115,7 @@ let launchRetryTimer = null;
 let rehydrationRetryTimer = null;
 let startRevealAckInFlightId = "";
 let startRevealAckDoneId = "";
+let deckOrderSyncRoomId = "";
 
 function makeClientActionId() {
   return `act_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -756,6 +757,36 @@ function scheduleLaunchRetry(roomData = null) {
   }, 120);
 }
 
+function syncPrivateDeckOrderIfNeeded(targetRoomId, reason = "", roomData = null) {
+  const safeRoomId = String(targetRoomId || "").trim();
+  if (!safeRoomId) return;
+  const cachedDeckOrder = readRoomDeckOrder(safeRoomId);
+  const sessionDeckOrder =
+    window.GameSession &&
+    String(window.GameSession.roomId || "") === safeRoomId &&
+    Array.isArray(window.GameSession.deckOrder)
+      ? window.GameSession.deckOrder
+      : [];
+  if (cachedDeckOrder.length === 28 || sessionDeckOrder.length === 28) return;
+  if (deckOrderSyncRoomId === safeRoomId) return;
+
+  deckOrderSyncRoomId = safeRoomId;
+  debugMatch("deckOrderSync:begin", {
+    targetRoomId: safeRoomId,
+    reason,
+    status: roomData?.status || lastRoomSnapshotData?.status || "",
+    cachedDeckOrderLength: cachedDeckOrder.length,
+    sessionDeckOrderLength: sessionDeckOrder.length,
+  });
+  startRoomIfNeeded(safeRoomId)
+    .catch(() => {})
+    .finally(() => {
+      if (deckOrderSyncRoomId === safeRoomId) {
+        deckOrderSyncRoomId = "";
+      }
+    });
+}
+
 function setTurnTimerUI(remainingSec, currentPlayer) {
   const S = window.GameSession || null;
   const localSeat = (S && typeof S.seatIndex === "number") ? S.seatIndex : -1;
@@ -905,6 +936,7 @@ function resetSessionState() {
   roomId = null;
   seatIndex = -1;
   botTurnNudgeKey = "";
+  deckOrderSyncRoomId = "";
   matchmakingBusy = false;
   window.GameSession = null;
   setLeaveRoomButtonVisible(false);
@@ -1583,6 +1615,7 @@ function watchActions(id) {
           String(lastRoomSnapshotData?.status || "") === "playing" &&
           effectiveDeckOrder.length !== 28
         ) {
+          syncPrivateDeckOrderIfNeeded(id, "watchActions:firstSnapshot:missingDeckOrder", lastRoomSnapshotData || null);
           debugMatch("watchActions:firstSnapshot:missingDeckOrder", {
             docs: snap.size,
             empty: snap.empty,
@@ -1695,6 +1728,7 @@ function launchLocalGame(roomData) {
     deckOrder: effectiveDeckOrder,
   };
   if (String(roomData.status || "") === "playing" && effectiveDeckOrder.length !== 28) {
+    syncPrivateDeckOrderIfNeeded(roomId, "launchLocalGame:waitDeckOrder", roomData);
     debugMatch("launchLocalGame:waitDeckOrder", {
       status: roomData.status || "",
       currentPlayer: window.GameSession.currentPlayer,

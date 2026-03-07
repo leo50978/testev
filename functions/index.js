@@ -1647,7 +1647,7 @@ function buildOpeningMoveForState(state) {
   };
 }
 
-function advanceBotsAndCollect(room, state, roomId, firstMove = null, actorUid = "") {
+function advanceBotsAndCollect(room, state, roomId, firstMove = null, actorUid = "", allowBotAdvance = true) {
   let liveState = normalizeGameState(state, room);
   const records = [];
   let autoBotMoves = 0;
@@ -1661,7 +1661,7 @@ function advanceBotsAndCollect(room, state, roomId, firstMove = null, actorUid =
     });
   }
 
-  while (liveState.winnerSeat < 0 && autoBotMoves < 12) {
+  while (allowBotAdvance === true && liveState.winnerSeat < 0 && autoBotMoves < 12) {
     const botSeat = safeSignedInt(liveState.currentPlayer);
     if (botSeat < 0 || botSeat > 3 || isSeatHuman(room, botSeat)) {
       break;
@@ -1683,8 +1683,15 @@ function advanceBotsAndCollect(room, state, roomId, firstMove = null, actorUid =
   };
 }
 
-function applyActionBatchInTransaction(tx, roomRefDoc, room, state, roomId, firstMove = null, actorUid = "") {
-  const batchResult = advanceBotsAndCollect(room, state, roomId, firstMove, actorUid);
+function applyActionBatchInTransaction(tx, roomRefDoc, room, state, roomId, firstMove = null, actorUid = "", options = {}) {
+  const batchResult = advanceBotsAndCollect(
+    room,
+    state,
+    roomId,
+    firstMove,
+    actorUid,
+    options?.allowBotAdvance !== false
+  );
   batchResult.records.forEach((record) => {
     const actionRef = roomRefDoc.collection("actions").doc(String(record.seq));
     tx.set(actionRef, {
@@ -2320,7 +2327,8 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
             gameState,
             roomRef.id,
             openingMove,
-            "server:opening"
+            "server:opening",
+            { allowBotAdvance: false }
           );
           const finalState = batchResult.state;
 
@@ -2438,6 +2446,7 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
   }
 
   const roomRef = db.collection(ROOMS_COLLECTION).doc(roomId);
+  const stateRef = gameStateRef(roomId);
   const startResult = await db.runTransaction(async (tx) => {
     const roomSnap = await tx.get(roomRef);
     if (!roomSnap.exists) {
@@ -2452,10 +2461,15 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
 
     const status = String(room.status || "");
     if (status !== "waiting") {
+      const stateSnap = status === "playing" ? await tx.get(stateRef) : null;
       return {
         ok: true,
         started: false,
         status,
+        startRevealPending: room.startRevealPending === true,
+        privateDeckOrder: status === "playing"
+          ? normalizePrivateDeckOrder(stateSnap?.data()?.deckOrder)
+          : [],
       };
     }
 
@@ -2478,7 +2492,8 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
       initialState,
       roomId,
       openingMove,
-      "server:opening"
+      "server:opening",
+      { allowBotAdvance: false }
     );
     const finalState = batchResult.state;
 
