@@ -27,6 +27,55 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
     />
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #3f4766;
+        overflow-x: hidden;
+      }
+
+      body {
+        min-height: 100vh;
+        min-height: 100svh;
+        overflow-y: auto;
+        overscroll-behavior-y: none;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      #domino-app-shell {
+        min-height: 100vh;
+        min-height: 100svh;
+        background: #3f4766;
+        isolation: isolate;
+        overflow: visible;
+      }
+
+      .auth-scroll-pane {
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+
+      .auth-scroll-pane::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+        display: none;
+      }
+
+      @supports (-webkit-touch-callout: none) {
+        html {
+          height: -webkit-fill-available;
+        }
+
+        body,
+        #domino-app-shell {
+          min-height: -webkit-fill-available;
+        }
+      }
+    </style>
   </head>
   <body class="m-0 p-0">
     <div id="domino-app-shell"></div>
