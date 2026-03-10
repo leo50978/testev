@@ -146,6 +146,24 @@ service cloud.firestore {
       allow read, write: if isFinanceAdmin();
     }
 
+    match /dashboardPushSubscriptions/{subscriptionId} {
+      allow read: if isFinanceAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if isFinanceAdmin()
+        || (
+          signedIn()
+          && request.resource.data.uid == request.auth.uid
+        );
+      allow update: if isFinanceAdmin()
+        || (
+          signedIn()
+          && resource.data.uid == request.auth.uid
+          && request.resource.data.uid == resource.data.uid
+        );
+      allow delete: if isFinanceAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+
     match /ambassadors/{ambassadorId} {
       allow read: if isFinanceAdmin();
       allow write: if isFinanceAdmin();

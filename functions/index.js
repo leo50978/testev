@@ -1,8 +1,10 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 const crypto = require("node:crypto");
+const webpush = require("web-push");
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -22,6 +24,7 @@ const AMBASSADOR_SECRETS_DOC = "credentials";
 const CHAT_COLLECTION = "globalChannelMessages";
 const SUPPORT_THREADS_COLLECTION = "supportThreads";
 const SUPPORT_MESSAGES_SUBCOLLECTION = "messages";
+const DASHBOARD_PUSH_SUBSCRIPTIONS_COLLECTION = "dashboardPushSubscriptions";
 
 const RATE_HTG_TO_DOES = 20;
 const DEFAULT_STAKE_REWARD_MULTIPLIER = 3;
@@ -50,6 +53,7 @@ const DEFAULT_PUBLIC_SETTINGS = Object.freeze({
 });
 const DPAYMENT_ADMIN_BOOTSTRAP_DOC = "dpayment_admin_bootstrap";
 const APP_PUBLIC_SETTINGS_DOC = "public_app_settings";
+const DASHBOARD_DEFAULT_NOTIFICATION_URL = "./Dpayment.html";
 const DEFAULT_GAME_STAKE_OPTIONS = Object.freeze([
   Object.freeze({ stakeDoes: 100, enabled: true, sortOrder: 10 }),
   Object.freeze({ stakeDoes: 500, enabled: false, sortOrder: 20 }),
@@ -765,6 +769,210 @@ function assertAdmin(request) {
     throw new HttpsError("permission-denied", "Accès administrateur requis.");
   }
   return authData;
+}
+
+function dashboardPushSubscriptionsCollection() {
+  return db.collection(DASHBOARD_PUSH_SUBSCRIPTIONS_COLLECTION);
+}
+
+function sanitizeWebPushEndpoint(value, maxLength = 2000) {
+  const out = sanitizeText(value || "", maxLength);
+  if (!out) return "";
+  if (!/^https:\/\/[^\s]+$/i.test(out)) return "";
+  return out;
+}
+
+function sanitizeWebPushKey(value, maxLength = 512) {
+  return String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, "")
+    .slice(0, maxLength);
+}
+
+function sanitizeDashboardPushUrl(value) {
+  const out = sanitizeText(value || "", 400);
+  if (!out) return DASHBOARD_DEFAULT_NOTIFICATION_URL;
+  if (/^(https:\/\/|\/|\.\/)/i.test(out)) return out;
+  return DASHBOARD_DEFAULT_NOTIFICATION_URL;
+}
+
+function sanitizePushSubscriptionPayload(payload = {}) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const endpoint = sanitizeWebPushEndpoint(data.endpoint || "");
+  const expirationTime = data.expirationTime == null ? null : Number(data.expirationTime);
+  const keysRaw = data.keys && typeof data.keys === "object" ? data.keys : {};
+  const p256dh = sanitizeWebPushKey(keysRaw.p256dh || "");
+  const authKey = sanitizeWebPushKey(keysRaw.auth || "");
+  const platform = sanitizeText(data.platform || "", 80).toLowerCase();
+  const userAgent = sanitizeText(data.userAgent || "", 240);
+  const enabled = data.enabled !== false;
+  return {
+    endpoint,
+    expirationTime: Number.isFinite(expirationTime) ? expirationTime : null,
+    keys: {
+      p256dh,
+      auth: authKey,
+    },
+    platform,
+    userAgent,
+    enabled,
+  };
+}
+
+function validatePushSubscriptionPayload(payload) {
+  if (!payload.endpoint) {
+    throw new HttpsError("invalid-argument", "Endpoint push requis.");
+  }
+  if (!payload.keys?.p256dh || !payload.keys?.auth) {
+    throw new HttpsError("invalid-argument", "Clés push invalides.");
+  }
+}
+
+function dashboardPushSubscriptionIdFromEndpoint(endpoint = "") {
+  const safeEndpoint = sanitizeWebPushEndpoint(endpoint || "");
+  if (!safeEndpoint) {
+    throw new HttpsError("invalid-argument", "Endpoint push invalide.");
+  }
+  return crypto.createHash("sha256").update(`dashboard-push:${safeEndpoint}`).digest("hex");
+}
+
+function getDashboardWebPushConfig() {
+  return {
+    publicKey: String(process.env.DASHBOARD_WEB_PUSH_PUBLIC_KEY || "").trim(),
+    privateKey: String(process.env.DASHBOARD_WEB_PUSH_PRIVATE_KEY || "").trim(),
+    subject: String(process.env.DASHBOARD_WEB_PUSH_SUBJECT || "mailto:admin@dominoeslakay.com").trim(),
+  };
+}
+
+let webPushConfiguredOnce = false;
+
+function ensureDashboardWebPushConfigured() {
+  const { publicKey, privateKey, subject } = getDashboardWebPushConfig();
+  if (!publicKey || !privateKey || !subject) {
+    return false;
+  }
+  if (!webPushConfiguredOnce) {
+    webpush.setVapidDetails(subject, publicKey, privateKey);
+    webPushConfiguredOnce = true;
+  }
+  return true;
+}
+
+async function getConfiguredDashboardAdminEmail() {
+  try {
+    const snap = await adminBootstrapRef().get();
+    if (snap.exists) {
+      const email = sanitizeEmail(snap.data()?.email || "", 160);
+      if (email) return email;
+    }
+  } catch (error) {
+    console.warn("[DASHBOARD_PUSH] impossible de lire le bootstrap admin", error);
+  }
+  return sanitizeEmail(FINANCE_ADMIN_EMAIL, 160);
+}
+
+async function listActiveDashboardPushSubscriptions() {
+  const targetEmail = await getConfiguredDashboardAdminEmail();
+  if (!targetEmail) return [];
+  const snap = await dashboardPushSubscriptionsCollection()
+    .where("email", "==", targetEmail)
+    .get();
+  return snap.docs
+    .map((docSnap) => ({ id: docSnap.id, ref: docSnap.ref, ...(docSnap.data() || {}) }))
+    .filter((item) => item.enabled !== false && sanitizeWebPushEndpoint(item.endpoint || ""));
+}
+
+function normalizePushSendErrorStatus(error) {
+  const statusCode = Number(error?.statusCode || error?.status || error?.code || 0);
+  return Number.isFinite(statusCode) ? statusCode : 0;
+}
+
+function shouldDeletePushSubscription(error) {
+  const statusCode = normalizePushSendErrorStatus(error);
+  return statusCode === 404 || statusCode === 410;
+}
+
+async function sendDashboardPushToAdmins(payload = {}) {
+  if (!ensureDashboardWebPushConfigured()) {
+    console.warn("[DASHBOARD_PUSH] configuration VAPID manquante; envoi ignoré.");
+    return { ok: false, sent: 0, skipped: true };
+  }
+
+  const targetEmail = await getConfiguredDashboardAdminEmail();
+  const subscriptions = await listActiveDashboardPushSubscriptions();
+  console.info("[DASHBOARD_PUSH] préparation envoi", {
+    type: sanitizeText(payload.type || "", 80),
+    entityId: sanitizeText(payload.entityId || "", 160),
+    tag: sanitizeText(payload.tag || "", 160),
+    targetEmail,
+    subscriptions: subscriptions.length,
+    sourceCreatedAt: String(payload.sourceCreatedAt || ""),
+  });
+  if (!subscriptions.length) {
+    return { ok: true, sent: 0 };
+  }
+
+  const message = {
+    type: sanitizeText(payload.type || "", 80),
+    title: sanitizeText(payload.title || "Dashboard", 120),
+    body: sanitizeText(payload.body || "", 240),
+    url: sanitizeDashboardPushUrl(payload.url || DASHBOARD_DEFAULT_NOTIFICATION_URL),
+    entityId: sanitizeText(payload.entityId || "", 160),
+    createdAt: new Date().toISOString(),
+    sourceCreatedAt: String(payload.sourceCreatedAt || ""),
+    tag: sanitizeText(payload.tag || "", 160),
+  };
+
+  let sent = 0;
+  await Promise.all(subscriptions.map(async (subscription) => {
+    const pushPayload = JSON.stringify(message);
+    try {
+      await webpush.sendNotification(
+        {
+          endpoint: subscription.endpoint,
+          expirationTime: subscription.expirationTime ?? null,
+          keys: {
+            p256dh: subscription.keys?.p256dh || "",
+            auth: subscription.keys?.auth || "",
+          },
+        },
+        pushPayload
+      );
+      sent += 1;
+      await subscription.ref.set({
+        lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      console.info("[DASHBOARD_PUSH] envoi ok", {
+        id: subscription.id,
+        type: message.type,
+        entityId: message.entityId,
+        tag: message.tag,
+      });
+    } catch (error) {
+      console.warn("[DASHBOARD_PUSH] échec envoi", {
+        id: subscription.id,
+        statusCode: normalizePushSendErrorStatus(error),
+        message: String(error?.message || error),
+      });
+      if (shouldDeletePushSubscription(error)) {
+        await subscription.ref.delete().catch(() => {});
+      }
+    }
+  }));
+
+  console.info("[DASHBOARD_PUSH] envoi terminé", {
+    type: message.type,
+    entityId: message.entityId,
+    tag: message.tag,
+    sent,
+    subscriptions: subscriptions.length,
+  });
+
+  return {
+    ok: true,
+    sent,
+  };
 }
 
 function walletRef(uid) {
@@ -3687,9 +3895,71 @@ exports.getPublicGameStakeOptionsSecure = publicOnCall("getPublicGameStakeOption
 
 exports.getPublicRuntimeConfigSecure = publicOnCall("getPublicRuntimeConfigSecure", async () => {
   const settings = await getSettingsSnapshotData();
+  const pushConfig = getDashboardWebPushConfig();
   return {
     appCheckSiteKey: String(settings.appCheckSiteKey || ""),
     appCheckConfigured: !!String(settings.appCheckSiteKey || "").trim(),
+    dashboardWebPushPublicKey: String(pushConfig.publicKey || ""),
+    dashboardWebPushEnabled: !!String(pushConfig.publicKey || "").trim(),
+  };
+});
+
+exports.registerDashboardPushSubscriptionSecure = publicOnCall("registerDashboardPushSubscriptionSecure", async (request) => {
+  const { uid, email } = assertFinanceAdmin(request);
+  const payload = request.data && typeof request.data === "object" ? request.data : {};
+  const subscription = sanitizePushSubscriptionPayload(payload.subscription || payload);
+  validatePushSubscriptionPayload(subscription);
+
+  const subscriptionId = dashboardPushSubscriptionIdFromEndpoint(subscription.endpoint);
+  const nowMs = Date.now();
+  await dashboardPushSubscriptionsCollection().doc(subscriptionId).set({
+    uid,
+    email: sanitizeEmail(email || "", 160),
+    endpoint: subscription.endpoint,
+    expirationTime: subscription.expirationTime,
+    keys: subscription.keys,
+    platform: subscription.platform,
+    userAgent: subscription.userAgent,
+    enabled: true,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAtMs: nowMs,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastSeenAtMs: nowMs,
+  }, { merge: true });
+
+  return {
+    ok: true,
+    subscriptionId,
+    enabled: true,
+    webPushEnabled: ensureDashboardWebPushConfigured(),
+  };
+});
+
+exports.unregisterDashboardPushSubscriptionSecure = publicOnCall("unregisterDashboardPushSubscriptionSecure", async (request) => {
+  const { uid } = assertFinanceAdmin(request);
+  const payload = request.data && typeof request.data === "object" ? request.data : {};
+  const endpoint = sanitizeWebPushEndpoint(payload.endpoint || "");
+  const subscriptionId = sanitizeText(payload.subscriptionId || "", 128)
+    || (endpoint ? dashboardPushSubscriptionIdFromEndpoint(endpoint) : "");
+
+  if (!subscriptionId) {
+    throw new HttpsError("invalid-argument", "Subscription introuvable.");
+  }
+
+  const ref = dashboardPushSubscriptionsCollection().doc(subscriptionId);
+  const snap = await ref.get();
+  if (snap.exists) {
+    const data = snap.data() || {};
+    if (String(data.uid || "") !== String(uid)) {
+      throw new HttpsError("permission-denied", "Subscription non autorisée.");
+    }
+    await ref.delete();
+  }
+
+  return {
+    ok: true,
+    subscriptionId,
   };
 });
 
@@ -3946,6 +4216,76 @@ exports.createOrderSecure = publicOnCall("createOrderSecure", async (request) =>
     orderId: orderRef.id,
     status: orderData.status,
   };
+});
+
+exports.notifyDashboardClientCreated = onDocumentCreated(`${CLIENTS_COLLECTION}/{clientId}`, async (event) => {
+  const snapshot = event.data;
+  if (!snapshot?.exists) return;
+  const clientId = String(event.params?.clientId || snapshot.id || "").trim();
+  const data = snapshot.data() || {};
+  const createdAtMs = safeInt(data.createdAtMs);
+  const createdAtValue = toMillis(data.createdAt);
+  if (!createdAtMs && !createdAtValue) {
+    return;
+  }
+
+  const playerLabel = sanitizeText(
+    data.name || data.username || String(data.email || "").split("@")[0] || `Client ${clientId.slice(0, 6)}`,
+    80
+  );
+  const sourceCreatedAt = String(data.createdAt || "").trim()
+    || (createdAtMs ? new Date(createdAtMs).toISOString() : "");
+
+  console.info("[DASHBOARD_PUSH] trigger client créé", {
+    clientId,
+    eventId: String(event.id || ""),
+    sourceCreatedAt,
+  });
+
+  await sendDashboardPushToAdmins({
+    type: "client_signup",
+    title: "Nouveau client inscrit",
+    body: `${playerLabel} vient de créer un compte.`,
+    url: DASHBOARD_DEFAULT_NOTIFICATION_URL,
+    entityId: clientId,
+    sourceCreatedAt,
+    tag: `dashboard_client_${clientId}`,
+  });
+});
+
+exports.notifyDashboardOrderCreated = onDocumentCreated(`${CLIENTS_COLLECTION}/{clientId}/orders/{orderId}`, async (event) => {
+  const snapshot = event.data;
+  if (!snapshot?.exists) return;
+  const orderId = String(event.params?.orderId || snapshot.id || "").trim();
+  const data = snapshot.data() || {};
+  const amount = safeInt(data.amount || data.amountHtg);
+  const methodName = sanitizeText(data.methodName || data.methodId || "", 80);
+  const labelParts = [];
+  if (amount > 0) labelParts.push(`${amount} HTG`);
+  if (methodName) labelParts.push(methodName);
+  const sourceCreatedAt = String(data.createdAt || "").trim()
+    || (safeInt(data.createdAtMs) ? new Date(safeInt(data.createdAtMs)).toISOString() : "");
+
+  console.info("[DASHBOARD_PUSH] trigger commande créée", {
+    orderId,
+    clientId: String(event.params?.clientId || "").trim(),
+    eventId: String(event.id || ""),
+    sourceCreatedAt,
+    amount,
+    methodName,
+  });
+
+  await sendDashboardPushToAdmins({
+    type: "order_created",
+    title: "Nouvelle commande",
+    body: labelParts.length
+      ? `Commande ${orderId} reçue (${labelParts.join(" • ")}).`
+      : `Commande ${orderId} reçue.`,
+    url: DASHBOARD_DEFAULT_NOTIFICATION_URL,
+    entityId: orderId,
+    sourceCreatedAt,
+    tag: `dashboard_order_${orderId}`,
+  });
 });
 
 exports.createWithdrawalSecure = publicOnCall("createWithdrawalSecure", async (request) => {

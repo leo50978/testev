@@ -301,11 +301,16 @@ function closeEmailVerificationModal() {
 function syncOneClickModalStep(requestedStep = 0) {
   const overlay = document.getElementById("oneClickAuthOverlay");
   if (!overlay) return 0;
+  const modalCard = document.getElementById("oneClickAuthCard");
   const steps = Array.from(overlay.querySelectorAll("[data-oneclick-step]"));
   const totalSteps = steps.length;
   if (totalSteps === 0) return 0;
   const safeStep = Math.max(0, Math.min(Number(requestedStep) || 0, totalSteps - 1));
   overlay.dataset.step = String(safeStep);
+  if (modalCard) {
+    const expandedStep = safeStep === totalSteps - 1;
+    modalCard.style.minHeight = expandedStep ? "30rem" : "27rem";
+  }
 
   steps.forEach((stepNode, index) => {
     const active = index === safeStep;
@@ -347,51 +352,51 @@ function ensureOneClickModal() {
   if (!overlay) {
     overlay = document.createElement("div");
     overlay.id = "oneClickAuthOverlay";
-    overlay.className = "fixed inset-0 z-[5400] hidden items-center justify-center bg-black/65 p-4 backdrop-blur-md";
+    overlay.className = "fixed inset-0 z-[5400] hidden items-center justify-center bg-black/65 p-3 backdrop-blur-md sm:p-4";
     overlay.innerHTML = `
-      <div class="relative w-[min(92vw,35rem)] max-w-[35rem] overflow-hidden rounded-[32px] border border-white/18 bg-[radial-gradient(circle_at_top,rgba(85,98,139,0.45),rgba(18,24,40,0.96)_58%)] p-5 text-white shadow-[18px_18px_44px_rgba(11,16,29,0.58),-12px_-12px_28px_rgba(99,112,152,0.16)] backdrop-blur-xl sm:min-h-[31rem] sm:p-6">
+      <div id="oneClickAuthCard" class="relative flex min-h-[27rem] w-full max-w-[22.5rem] flex-col overflow-hidden rounded-[26px] border border-white/18 bg-[radial-gradient(circle_at_top,rgba(85,98,139,0.45),rgba(18,24,40,0.96)_58%)] p-4 text-white shadow-[18px_18px_44px_rgba(11,16,29,0.58),-12px_-12px_28px_rgba(99,112,152,0.16)] backdrop-blur-xl sm:max-w-[30rem] sm:rounded-[28px] sm:p-5">
         <button
           id="oneClickAuthCloseBtn"
           type="button"
           aria-label="Fermer"
           title="Fermer"
-          class="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full border border-white/12 bg-white/6 text-white/80 transition hover:border-white/25 hover:bg-white/12"
+          class="absolute right-3 top-3 grid h-10 w-10 place-items-center rounded-full border border-white/12 bg-white/6 text-white/80 transition hover:border-white/25 hover:bg-white/12"
         >
           <i class="fa-solid fa-xmark text-base"></i>
         </button>
-        <div class="flex items-start gap-4 pr-12">
-          <div class="grid h-12 w-12 shrink-0 place-items-center rounded-2xl border border-[#ffb26e]/30 bg-[#f57c00]/14 text-[#ffd2ac] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
-            <i class="fa-solid fa-key text-lg"></i>
+        <div class="flex items-center gap-3 pr-12">
+          <div class="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-[#ffb26e]/30 bg-[#f57c00]/14 text-[#ffd2ac] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
+            <i class="fa-solid fa-key text-base"></i>
           </div>
           <div class="min-w-0">
-            <div class="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#f6bf8d]">Auth en un click</div>
-            <h2 class="mt-2 text-[1.85rem] font-extrabold leading-tight tracking-tight text-white sm:text-[2rem]">Création rapide du compte</h2>
-            <p class="mt-2 max-w-md text-sm leading-6 text-white/72">
-              Un parcours simple, propre et en trois étapes. Tu remplis seulement l’essentiel.
-            </p>
+            <div class="text-[15px] font-semibold tracking-[0.01em] text-white">Auth en un click</div>
           </div>
         </div>
-        <div class="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+        <div class="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5">
           <div class="flex items-center justify-between gap-4">
-            <div id="oneClickStepLabel" class="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/60">Étape 1 sur 3</div>
-            <div class="flex items-center gap-2">
+            <div id="oneClickStepLabel" class="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/60">Étape 1 sur 5</div>
+            <div class="flex items-center gap-1.5 sm:gap-2">
               <span data-oneclick-dot class="h-2.5 w-2.5 rounded-full border border-[#f7c08d] bg-[#f48f45] shadow-[0_0_14px_rgba(244,143,69,0.45)]"></span>
               <span data-oneclick-dot class="h-2.5 w-2.5 rounded-full border border-white/10 bg-white/12"></span>
               <span data-oneclick-dot class="h-2.5 w-2.5 rounded-full border border-white/10 bg-white/12"></span>
+              <span data-oneclick-dot class="h-2.5 w-2.5 rounded-full border border-white/10 bg-white/12"></span>
+              <span data-oneclick-dot class="h-2.5 w-2.5 rounded-full border border-white/10 bg-white/12"></span>
             </div>
           </div>
         </div>
-        <div class="mt-5 min-h-[17.5rem]">
+        <div class="mt-4 min-h-0 flex-1 overflow-hidden">
           <div data-oneclick-step="0" class="space-y-3">
             <div>
               <label for="oneClickUsername" class="mb-1.5 block text-xs font-medium text-white/70">Nom du player</label>
-              <input id="oneClickUsername" type="text" autocomplete="off" placeholder="ex: player509" class="block w-full rounded-2xl border border-white/16 bg-white/[0.08] px-4 py-3.5 text-sm text-white placeholder-white/45 shadow-[inset_6px_6px_12px_rgba(8,12,22,0.35),inset_-4px_-4px_10px_rgba(84,96,136,0.12)] outline-none transition focus:border-[#f48f45]" />
+              <input id="oneClickUsername" type="text" autocomplete="off" placeholder="ex: player509" class="block w-full rounded-2xl border border-white/16 bg-white/[0.08] px-4 py-3 text-sm text-white placeholder-white/45 shadow-[inset_6px_6px_12px_rgba(8,12,22,0.35),inset_-4px_-4px_10px_rgba(84,96,136,0.12)] outline-none transition focus:border-[#f48f45]" />
               <div class="mt-1.5 text-[11px] leading-5 text-white/55">3 à 24 caractères, avec au moins 4 lettres et 1 chiffre.</div>
             </div>
+          </div>
+          <div data-oneclick-step="1" class="hidden space-y-3">
             <div>
               <label for="oneClickPassword" class="mb-1.5 block text-xs font-medium text-white/70">Passcode</label>
               <div class="relative">
-                <input id="oneClickPassword" type="password" autocomplete="new-password" placeholder="Minimum 6 caractères" class="block w-full rounded-2xl border border-white/16 bg-white/[0.08] px-4 py-3.5 pr-12 text-sm text-white placeholder-white/45 shadow-[inset_6px_6px_12px_rgba(8,12,22,0.35),inset_-4px_-4px_10px_rgba(84,96,136,0.12)] outline-none transition focus:border-[#f48f45]" />
+                <input id="oneClickPassword" type="password" autocomplete="new-password" placeholder="Minimum 6 caractères" class="block w-full rounded-2xl border border-white/16 bg-white/[0.08] px-4 py-3 pr-12 text-sm text-white placeholder-white/45 shadow-[inset_6px_6px_12px_rgba(8,12,22,0.35),inset_-4px_-4px_10px_rgba(84,96,136,0.12)] outline-none transition focus:border-[#f48f45]" />
                 <button
                   id="oneClickPasswordToggleBtn"
                   type="button"
@@ -404,10 +409,15 @@ function ensureOneClickModal() {
               </div>
               <div class="mt-1.5 text-[11px] leading-5 text-white/55">Le passcode doit contenir au moins 1 lettre et 1 chiffre.</div>
             </div>
+          </div>
+          <div data-oneclick-step="2" class="hidden space-y-3">
+            <div class="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-[12px] leading-5 text-white/62">
+              Réécris exactement le passcode précédent pour confirmer qu’il est correct.
+            </div>
             <div>
               <label for="oneClickPasswordConfirm" class="mb-1.5 block text-xs font-medium text-white/70">Vérification du passcode</label>
               <div class="relative">
-                <input id="oneClickPasswordConfirm" type="password" autocomplete="new-password" placeholder="Confirme ton passcode" class="block w-full rounded-2xl border border-white/16 bg-white/[0.08] px-4 py-3.5 pr-12 text-sm text-white placeholder-white/45 shadow-[inset_6px_6px_12px_rgba(8,12,22,0.35),inset_-4px_-4px_10px_rgba(84,96,136,0.12)] outline-none transition focus:border-[#f48f45]" />
+                <input id="oneClickPasswordConfirm" type="password" autocomplete="new-password" placeholder="Confirme ton passcode" class="block w-full rounded-2xl border border-white/16 bg-white/[0.08] px-4 py-3 pr-12 text-sm text-white placeholder-white/45 shadow-[inset_6px_6px_12px_rgba(8,12,22,0.35),inset_-4px_-4px_10px_rgba(84,96,136,0.12)] outline-none transition focus:border-[#f48f45]" />
                 <button
                   id="oneClickPasswordConfirmToggleBtn"
                   type="button"
@@ -420,7 +430,7 @@ function ensureOneClickModal() {
               </div>
             </div>
           </div>
-          <div data-oneclick-step="1" class="hidden space-y-3">
+          <div data-oneclick-step="3" class="hidden space-y-2.5">
             <div class="rounded-2xl border border-[#ffb26e]/22 bg-[#f57c00]/10 px-4 py-3.5 text-sm leading-6 text-white/80">
               Tu peux ajouter un code promo si tu en as un. <span class="font-semibold text-white">Cette étape est facultative.</span>
             </div>
@@ -440,8 +450,8 @@ function ensureOneClickModal() {
               Si tu n’as pas de code promo, passe directement à l’étape suivante.
             </div>
           </div>
-          <div data-oneclick-step="2" class="hidden space-y-3">
-            <div class="space-y-3 rounded-2xl border border-white/12 bg-white/[0.05] px-4 py-4">
+          <div data-oneclick-step="4" class="hidden space-y-2.5">
+            <div class="space-y-3 rounded-2xl border border-white/12 bg-white/[0.05] px-4 py-3.5">
               <label class="flex items-start gap-3 text-sm text-white/90">
                 <input
                   id="oneClickAgeCheckbox"
@@ -462,7 +472,7 @@ function ensureOneClickModal() {
                 </span>
               </label>
               <div class="text-[11px] leading-5 text-white/62 sm:text-xs">
-                En créant un compte, tu confirmes aussi avoir lu la
+                Tu confirmes aussi avoir lu la
                 <a href="${PRIVACY_ROUTE}" target="_blank" rel="noopener noreferrer" class="text-[#ffd8b5] underline underline-offset-2">politique de confidentialité</a>
                 et les
                 <a href="${LEGAL_ROUTE}" target="_blank" rel="noopener noreferrer" class="text-[#ffd8b5] underline underline-offset-2">mentions légales</a>.
@@ -470,8 +480,8 @@ function ensureOneClickModal() {
             </div>
           </div>
         </div>
-        <div id="oneClickAuthError" class="mt-3 min-h-5 text-sm text-[#ffb0b0]"></div>
-        <div class="mt-4 flex flex-col gap-3 sm:flex-row">
+        <div id="oneClickAuthError" class="mt-2.5 min-h-5 text-sm text-[#ffb0b0]"></div>
+        <div class="mt-3 flex flex-col gap-3 sm:flex-row">
           <button id="oneClickAuthCancelBtn" type="button" class="h-11 flex-1 rounded-2xl border border-white/12 bg-white/[0.06] text-sm font-semibold text-white/82 transition hover:bg-white/[0.1]">
             Annuler
           </button>
@@ -1232,18 +1242,33 @@ function bindPage1Events() {
     if (signupTermsCheckbox && oneClickTermsCheckbox) signupTermsCheckbox.checked = oneClickTermsCheckbox.checked === true;
   };
 
-  const validateOneClickIdentityStep = () => {
+  const validateOneClickUsernameStep = () => {
     const usernameRaw = String(oneClickUsernameInput?.value || "").trim();
     const username = normalizeUsername(usernameRaw);
-    const password = String(oneClickPasswordInput?.value || "");
-    const passwordConfirm = String(oneClickPasswordConfirmInput?.value || "");
 
     if (!isValidOneClickUsername(username)) {
       if (oneClickErrorEl) oneClickErrorEl.textContent = "Nom du player invalide : au moins 4 lettres, 1 chiffre, et seulement lettres, chiffres, point, tiret ou underscore.";
       return false;
     }
+    return true;
+  };
+
+  const validateOneClickPasswordStep = () => {
+    const password = String(oneClickPasswordInput?.value || "");
+
     if (!isValidOneClickPassword(password)) {
       if (oneClickErrorEl) oneClickErrorEl.textContent = "Passcode invalide : minimum 6 caractères avec au moins 1 lettre et 1 chiffre.";
+      return false;
+    }
+    return true;
+  };
+
+  const validateOneClickPasswordConfirmStep = () => {
+    const password = String(oneClickPasswordInput?.value || "");
+    const passwordConfirm = String(oneClickPasswordConfirmInput?.value || "");
+
+    if (!passwordConfirm) {
+      if (oneClickErrorEl) oneClickErrorEl.textContent = "Tu dois confirmer le passcode.";
       return false;
     }
     if (password !== passwordConfirm) {
@@ -1301,8 +1326,10 @@ function bindPage1Events() {
     oneClickStepNextBtn.addEventListener("click", () => {
       if (oneClickErrorEl) oneClickErrorEl.textContent = "";
       const currentStep = Number(oneClickOverlay?.dataset.step || 0);
-      if (currentStep === 0 && !validateOneClickIdentityStep()) return;
-      if (currentStep === 1) {
+      if (currentStep === 0 && !validateOneClickUsernameStep()) return;
+      if (currentStep === 1 && !validateOneClickPasswordStep()) return;
+      if (currentStep === 2 && !validateOneClickPasswordConfirmStep()) return;
+      if (currentStep === 3) {
         syncOneClickDataToSignup();
       }
       syncOneClickModalStep(currentStep + 1);
@@ -1330,18 +1357,9 @@ function bindPage1Events() {
         if (oneClickErrorEl) oneClickErrorEl.textContent = "Tu dois accepter les conditions d'utilisation pour créer ton compte.";
         return;
       }
-      if (!isValidOneClickUsername(username)) {
-        if (oneClickErrorEl) oneClickErrorEl.textContent = "Nom du player invalide : au moins 4 lettres, 1 chiffre, et seulement lettres, chiffres, point, tiret ou underscore.";
-        return;
-      }
-      if (!isValidOneClickPassword(password)) {
-        if (oneClickErrorEl) oneClickErrorEl.textContent = "Passcode invalide : minimum 6 caractères avec au moins 1 lettre et 1 chiffre.";
-        return;
-      }
-      if (password !== passwordConfirm) {
-        if (oneClickErrorEl) oneClickErrorEl.textContent = "Le mot de passe de confirmation ne correspond pas.";
-        return;
-      }
+      if (!validateOneClickUsernameStep()) return;
+      if (!validateOneClickPasswordStep()) return;
+      if (!validateOneClickPasswordConfirmStep()) return;
 
       try {
         await withButtonLoading(oneClickSubmitBtn, async () => {
