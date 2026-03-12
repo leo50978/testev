@@ -94,6 +94,7 @@ let seatIndex = -1;
 let botTurnNudgeKey = "";
 let startTimer = null;
 let waitingStartKickInFlightId = "";
+let waitingStartKickLastAtMs = 0;
 let turnTimer = null;
 let turnTimerKey = "";
 let turnTick = null;
@@ -692,6 +693,7 @@ function clearTimer() {
     startTimer = null;
   }
   waitingStartKickInFlightId = "";
+  waitingStartKickLastAtMs = 0;
 }
 
 function clearTurnTimer() {
@@ -1142,6 +1144,25 @@ async function startRoomIfNeeded(id) {
   debugMatch("startRoomIfNeeded:begin", { targetRoomId: id });
   try {
     const result = await ensureRoomReadySecure({ roomId: id });
+    if (
+      result &&
+      String(result.status || "") === "waiting" &&
+      lastRoomSnapshotData &&
+      String(roomId || "") === String(id)
+    ) {
+      lastRoomSnapshotData = {
+        ...lastRoomSnapshotData,
+        waitingDeadlineMs: Number.isFinite(Number(result.waitingDeadlineMs))
+          ? Number(result.waitingDeadlineMs)
+          : lastRoomSnapshotData.waitingDeadlineMs,
+        humanCount: Number.isFinite(Number(result.humanCount))
+          ? Number(result.humanCount)
+          : lastRoomSnapshotData.humanCount,
+        botCount: Number.isFinite(Number(result.botCount))
+          ? Number(result.botCount)
+          : lastRoomSnapshotData.botCount,
+      };
+    }
     if (Array.isArray(result?.privateDeckOrder) && result.privateDeckOrder.length === 28) {
       const deckOrder = writeRoomDeckOrder(id, result.privateDeckOrder);
       if (
@@ -1158,6 +1179,7 @@ async function startRoomIfNeeded(id) {
       });
     }
     debugMatch("startRoomIfNeeded:success", { targetRoomId: id });
+    return result;
   } catch (err) {
     debugMatch("startRoomIfNeeded:error", {
       targetRoomId: id,
@@ -1175,6 +1197,9 @@ function scheduleWaitingCountdown(id, roomData) {
 
   const kickServerStart = () => {
     if (waitingStartKickInFlightId === String(id)) return;
+    const nowMs = Date.now();
+    if (nowMs - waitingStartKickLastAtMs < 1000) return;
+    waitingStartKickLastAtMs = nowMs;
     waitingStartKickInFlightId = String(id);
     startRoomIfNeeded(id)
       .catch((err) => {
@@ -1197,7 +1222,6 @@ function scheduleWaitingCountdown(id, roomData) {
     const deadlineMs = Number.isFinite(Number(liveRoom?.waitingDeadlineMs)) ? Number(liveRoom.waitingDeadlineMs) : 0;
 
     if (humans >= 4) {
-      clearTimer();
       setStatus(`Salle en attente (${humans}/4). Tous les joueurs sont là, démarrage...`);
       kickServerStart();
       return;
@@ -1205,12 +1229,12 @@ function scheduleWaitingCountdown(id, roomData) {
 
     if (deadlineMs <= 0) {
       setStatus(`Salle en attente (${humans}/4). Le serveur prépare encore le démarrage.`);
+      kickServerStart();
       return;
     }
 
     const remainingMs = Math.max(0, deadlineMs - Date.now());
     if (remainingMs <= 0) {
-      clearTimer();
       setStatus(`Salle en attente (${humans}/4). Démarrage...`);
       kickServerStart();
       return;
