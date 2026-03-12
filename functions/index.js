@@ -61,6 +61,7 @@ const DEFAULT_GAME_STAKE_OPTIONS = Object.freeze([
   Object.freeze({ stakeDoes: 5000, enabled: false, sortOrder: 40 }),
 ]);
 const DEFAULT_BOT_DIFFICULTY = "expert";
+const ROOM_WAIT_MS = 15 * 1000;
 const BOT_DIFFICULTY_LEVELS = new Set(["amateur", "expert", "ultra"]);
 const BOT_DIFFICULTY_LOOKAHEAD = Object.freeze({
   amateur: 0,
@@ -2235,6 +2236,26 @@ function timestampToMillis(value) {
   return Number.isFinite(raw) ? raw : 0;
 }
 
+function resolveRoomCreatedAtMs(room = {}) {
+  return safeSignedInt(room.createdAtMs) || timestampToMillis(room.createdAt);
+}
+
+function resolveWaitingDeadlineMs(room = {}, nowMs = Date.now()) {
+  const explicit = safeSignedInt(room.waitingDeadlineMs);
+  if (explicit > 0) return explicit;
+  const createdAtMs = resolveRoomCreatedAtMs(room);
+  if (createdAtMs > 0) return createdAtMs + ROOM_WAIT_MS;
+  return nowMs + ROOM_WAIT_MS;
+}
+
+function shouldStartWaitingRoom(room = {}, nowMs = Date.now()) {
+  const humans = Array.isArray(room.playerUids)
+    ? room.playerUids.filter(Boolean).length
+    : safeInt(room.humanCount);
+  if (humans >= 4) return true;
+  return nowMs >= resolveWaitingDeadlineMs(room, nowMs);
+}
+
 async function findActiveRoomForUser(uid) {
   const rooms = db.collection(ROOMS_COLLECTION);
   const membershipSnap = await rooms
@@ -2315,6 +2336,74 @@ async function ensureRoomGameStartedTx(tx, roomRefDoc, room = {}) {
   return {
     state,
     records: batchResult.records,
+  };
+}
+
+function buildStartedRoomTransaction(tx, roomRefDoc, room = {}, options = {}) {
+  const configuredBotDifficulty = String(options.configuredBotDifficulty || room.botDifficulty || DEFAULT_BOT_DIFFICULTY);
+  const nowMs = safeSignedInt(options.nowMs) || Date.now();
+  const humans = Array.isArray(room.playerUids) ? room.playerUids.filter(Boolean).length : safeInt(room.humanCount);
+  const deckOrder = Array.isArray(room.deckOrder) && room.deckOrder.length === 28 ? room.deckOrder.slice(0, 28) : makeDeckOrder();
+  const roomAtStart = {
+    ...room,
+    botDifficulty: configuredBotDifficulty,
+    deckOrder,
+    humanCount: humans,
+    botCount: Math.max(0, 4 - humans),
+    playedCount: 0,
+  };
+  const initialState = createInitialGameState(roomAtStart, deckOrder);
+  const openingMove = buildOpeningMoveForState(initialState);
+  const batchResult = applyActionBatchInTransaction(
+    tx,
+    roomRefDoc,
+    roomAtStart,
+    initialState,
+    roomRefDoc.id,
+    openingMove,
+    "server:opening",
+    { allowBotAdvance: false }
+  );
+  const finalState = batchResult.state;
+
+  tx.set(gameStateRef(roomRefDoc.id), buildGameStateWrite(finalState), { merge: true });
+
+  const updates = {
+    status: finalState.winnerSeat >= 0 ? "ended" : "playing",
+    startRevealPending: finalState.winnerSeat < 0,
+    startRevealAckUids: [],
+    botCount: Math.max(0, 4 - humans),
+    botDifficulty: configuredBotDifficulty,
+    startedAt: admin.firestore.FieldValue.serverTimestamp(),
+    startedAtMs: nowMs,
+    deckOrder: admin.firestore.FieldValue.delete(),
+    turnLockedUntilMs: 0,
+    endClicks: {},
+    playerEmails: admin.firestore.FieldValue.delete(),
+    waitingDeadlineMs: admin.firestore.FieldValue.delete(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  Object.assign(updates, buildRoomUpdateFromGameState(roomAtStart, finalState, batchResult.records));
+  if (finalState.winnerSeat < 0) {
+    updates.winnerSeat = admin.firestore.FieldValue.delete();
+    updates.winnerUid = admin.firestore.FieldValue.delete();
+    updates.endedReason = admin.firestore.FieldValue.delete();
+    updates.endedAt = admin.firestore.FieldValue.delete();
+    updates.endedAtMs = admin.firestore.FieldValue.delete();
+  }
+
+  tx.update(roomRefDoc, updates);
+
+  return {
+    ok: true,
+    started: true,
+    status: String(updates.status || "playing"),
+    startRevealPending: updates.startRevealPending === true,
+    privateDeckOrder: String(updates.status || "playing") === "playing" ? finalState.deckOrder.slice(0, 28) : [],
+    humanCount: humans,
+    botCount: Math.max(0, 4 - humans),
+    waitingDeadlineMs: 0,
   };
 }
 
@@ -2427,6 +2516,9 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
   const waitingDocs = waitingCandidates.docs
     .slice()
     .sort((a, b) => {
+      const humansLeft = safeInt(a.get("humanCount"));
+      const humansRight = safeInt(b.get("humanCount"));
+      if (humansRight !== humansLeft) return humansRight - humansLeft;
       const left = timestampToMillis(a.get("createdAt"));
       const right = timestampToMillis(b.get("createdAt"));
       return left - right;
@@ -2459,6 +2551,14 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
 
         const currentSeats = room.seats && typeof room.seats === "object" ? room.seats : {};
         const playerUids = Array.from({ length: 4 }, (_, idx) => String((room.playerUids || [])[idx] || ""));
+        const nowMs = Date.now();
+        const waitingDeadlineMs = resolveWaitingDeadlineMs(room, nowMs);
+        if (safeSignedInt(room.waitingDeadlineMs) !== waitingDeadlineMs) {
+          tx.update(roomRef, {
+            waitingDeadlineMs,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
         if (playerUids.includes(uid)) {
           const seats = currentSeats;
           const seatIndex = typeof seats[uid] === "number" ? seats[uid] : 0;
@@ -2477,6 +2577,17 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
         }
 
         const humans = playerUids.filter(Boolean).length;
+        if (shouldStartWaitingRoom({ ...room, waitingDeadlineMs }, nowMs)) {
+          const startedRoom = buildStartedRoomTransaction(tx, roomRef, { ...room, waitingDeadlineMs }, {
+            configuredBotDifficulty,
+            nowMs,
+          });
+          return {
+            ...startedRoom,
+            skipped: true,
+            roomId: roomRef.id,
+          };
+        }
         if (humans >= 4) {
           throw new HttpsError("aborted", "Salle complète.");
         }
@@ -2532,52 +2643,31 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
           rewardAmountDoes,
           stakeConfigId: selectedStakeConfig.id,
           turnLockedUntilMs: 0,
+          waitingDeadlineMs,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
 
         if (nextHumans >= 4) {
-          const deckOrder = makeDeckOrder();
-          const roomAtStart = {
-            ...room,
-            playerUids: nextPlayerUids,
-            playerNames: nextPlayerNames,
-            seats: nextSeats,
-            humanCount: nextHumans,
-            botCount: 0,
-            deckOrder,
-            playedCount: 0,
+          return {
+            ok: true,
+            resumed: false,
+            charged: true,
+            roomId: roomRef.id,
+            seatIndex,
+            does: walletMutation.afterDoes,
+            ...buildStartedRoomTransaction(tx, roomRef, {
+              ...room,
+              playerUids: nextPlayerUids,
+              playerNames: nextPlayerNames,
+              seats: nextSeats,
+              humanCount: nextHumans,
+              botCount: 0,
+              waitingDeadlineMs,
+            }, {
+              configuredBotDifficulty,
+              nowMs,
+            }),
           };
-          const gameState = createInitialGameState(roomAtStart, deckOrder);
-          const openingMove = buildOpeningMoveForState(gameState);
-          const batchResult = applyActionBatchInTransaction(
-            tx,
-            roomRef,
-            roomAtStart,
-            gameState,
-            roomRef.id,
-            openingMove,
-            "server:opening",
-            { allowBotAdvance: false }
-          );
-          const finalState = batchResult.state;
-
-          tx.set(gameStateRef(roomRef.id), buildGameStateWrite(finalState), { merge: true });
-
-          updates.status = finalState.winnerSeat >= 0 ? "ended" : "playing";
-          updates.startRevealPending = finalState.winnerSeat < 0;
-          updates.startRevealAckUids = [];
-          updates.startedAt = admin.firestore.FieldValue.serverTimestamp();
-          updates.startedAtMs = Date.now();
-          updates.deckOrder = admin.firestore.FieldValue.delete();
-          updates.endClicks = {};
-          Object.assign(updates, buildRoomUpdateFromGameState(roomAtStart, finalState, batchResult.records));
-          if (finalState.winnerSeat < 0) {
-            updates.winnerSeat = admin.firestore.FieldValue.delete();
-            updates.winnerUid = admin.firestore.FieldValue.delete();
-            updates.endedReason = admin.firestore.FieldValue.delete();
-            updates.endedAt = admin.firestore.FieldValue.delete();
-            updates.endedAtMs = admin.firestore.FieldValue.delete();
-          }
         }
 
         tx.update(roomRef, updates);
@@ -2591,7 +2681,8 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
           status: String(updates.status || "waiting"),
           startRevealPending: updates.startRevealPending === true,
           does: walletMutation.afterDoes,
-          privateDeckOrder: updates.status === "playing" ? finalState.deckOrder.slice(0, 28) : [],
+          waitingDeadlineMs,
+          privateDeckOrder: [],
         };
       });
 
@@ -2599,6 +2690,9 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
         if (joined?.startRevealPending !== true) {
           await processPendingBotTurns(String(joined.roomId || ""));
         }
+      }
+      if (joined?.skipped === true) {
+        continue;
       }
       return joined;
     } catch (err) {
@@ -2611,6 +2705,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
 
   const newRoomRef = db.collection(ROOMS_COLLECTION).doc();
   const created = await db.runTransaction(async (tx) => {
+    const nowMs = Date.now();
     const walletMutation = await applyWalletMutationTx(tx, {
       uid,
       email,
@@ -2625,7 +2720,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
     tx.set(newRoomRef, {
       status: "waiting",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAtMs: Date.now(),
+      createdAtMs: nowMs,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       ownerUid: uid,
       playerUids: [uid, "", "", ""],
@@ -2637,6 +2732,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
       botDifficulty: configuredBotDifficulty,
       startRevealPending: false,
       startRevealAckUids: [],
+      waitingDeadlineMs: nowMs + ROOM_WAIT_MS,
       startedAt: null,
       startedAtMs: 0,
       endedAtMs: 0,
@@ -2658,6 +2754,7 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
       seatIndex: 0,
       status: "waiting",
       does: walletMutation.afterDoes,
+      waitingDeadlineMs: nowMs + ROOM_WAIT_MS,
     };
   });
 
@@ -2675,7 +2772,6 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
   }
 
   const roomRef = db.collection(ROOMS_COLLECTION).doc(roomId);
-  const stateRef = gameStateRef(roomId);
   const startResult = await db.runTransaction(async (tx) => {
     const roomSnap = await tx.get(roomRef);
     if (!roomSnap.exists) {
@@ -2690,77 +2786,50 @@ exports.ensureRoomReady = publicOnCall("ensureRoomReady", async (request) => {
 
     const status = String(room.status || "");
     if (status !== "waiting") {
-      const stateSnap = status === "playing" ? await tx.get(stateRef) : null;
       return {
         ok: true,
         started: false,
         status,
         startRevealPending: room.startRevealPending === true,
-        privateDeckOrder: status === "playing"
-          ? normalizePrivateDeckOrder(stateSnap?.data()?.deckOrder)
-          : [],
+        waitingDeadlineMs: safeSignedInt(room.waitingDeadlineMs),
+        humanCount: safeInt(room.humanCount),
+        botCount: safeInt(room.botCount),
+        privateDeckOrder: [],
       };
     }
 
+    const nowMs = Date.now();
     const humans = Array.isArray(room.playerUids) ? room.playerUids.filter(Boolean).length : safeInt(room.humanCount);
-    const deckOrder = Array.isArray(room.deckOrder) && room.deckOrder.length === 28 ? room.deckOrder.slice(0, 28) : makeDeckOrder();
-    const roomAtStart = {
-      ...room,
-      botDifficulty: configuredBotDifficulty,
-      deckOrder,
-      humanCount: humans,
-      botCount: Math.max(0, 4 - humans),
-      playedCount: 0,
-    };
-    const initialState = createInitialGameState(roomAtStart, deckOrder);
-    const openingMove = buildOpeningMoveForState(initialState);
-    const batchResult = applyActionBatchInTransaction(
-      tx,
-      roomRef,
-      roomAtStart,
-      initialState,
-      roomId,
-      openingMove,
-      "server:opening",
-      { allowBotAdvance: false }
-    );
-    const finalState = batchResult.state;
-
-    tx.set(gameStateRef(roomId), buildGameStateWrite(finalState), { merge: true });
-
-    const updates = {
-      status: finalState.winnerSeat >= 0 ? "ended" : "playing",
-      startRevealPending: finalState.winnerSeat < 0,
-      startRevealAckUids: [],
-      botCount: Math.max(0, 4 - humans),
-      botDifficulty: configuredBotDifficulty,
-      startedAt: admin.firestore.FieldValue.serverTimestamp(),
-      startedAtMs: Date.now(),
-      deckOrder: admin.firestore.FieldValue.delete(),
-      turnLockedUntilMs: 0,
-      endClicks: {},
-      playerEmails: admin.firestore.FieldValue.delete(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-
-    Object.assign(updates, buildRoomUpdateFromGameState(roomAtStart, finalState, batchResult.records));
-    if (finalState.winnerSeat < 0) {
-      updates.winnerSeat = admin.firestore.FieldValue.delete();
-      updates.winnerUid = admin.firestore.FieldValue.delete();
-      updates.endedReason = admin.firestore.FieldValue.delete();
-      updates.endedAt = admin.firestore.FieldValue.delete();
-      updates.endedAtMs = admin.firestore.FieldValue.delete();
+    const waitingDeadlineMs = resolveWaitingDeadlineMs(room, nowMs);
+    if (safeSignedInt(room.waitingDeadlineMs) !== waitingDeadlineMs) {
+      tx.update(roomRef, {
+        waitingDeadlineMs,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
     }
 
-    tx.update(roomRef, updates);
+    if (!shouldStartWaitingRoom({ ...room, humanCount: humans, waitingDeadlineMs }, nowMs)) {
+      return {
+        ok: true,
+        started: false,
+        status: "waiting",
+        startRevealPending: false,
+        waitingDeadlineMs,
+        humanCount: humans,
+        botCount: Math.max(0, 4 - humans),
+        privateDeckOrder: [],
+      };
+    }
 
-    return {
-      ok: true,
-      started: true,
-      status: String(updates.status || "playing"),
-      startRevealPending: updates.startRevealPending === true,
-      privateDeckOrder: String(updates.status || "playing") === "playing" ? finalState.deckOrder.slice(0, 28) : [],
-    };
+    return buildStartedRoomTransaction(tx, roomRef, {
+      ...room,
+      humanCount: humans,
+      botCount: Math.max(0, 4 - humans),
+      waitingDeadlineMs,
+    }, {
+      configuredBotDifficulty,
+      nowMs,
+    });
   });
 
   if (startResult?.status === "playing") {

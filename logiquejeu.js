@@ -23,7 +23,6 @@ import {
 } from "./secure-functions.js";
 
 const ROOMS = "rooms";
-const WAIT_MS = 15 * 1000;
 const TURN_LIMIT_MS = 30 * 1000;
 const ACTION_CACHE_PREFIX = "domino_actions_";
 const ROOM_DECK_CACHE_PREFIX = "domino_deck_";
@@ -94,6 +93,7 @@ let roomId = null;
 let seatIndex = -1;
 let botTurnNudgeKey = "";
 let startTimer = null;
+let waitingStartKickInFlightId = "";
 let turnTimer = null;
 let turnTimerKey = "";
 let turnTick = null;
@@ -688,8 +688,10 @@ function showReplayReturnOverlay(message) {
 function clearTimer() {
   if (startTimer) {
     clearTimeout(startTimer);
+    clearInterval(startTimer);
     startTimer = null;
   }
+  waitingStartKickInFlightId = "";
 }
 
 function clearTurnTimer() {
@@ -936,6 +938,7 @@ function resetSessionState() {
   roomId = null;
   seatIndex = -1;
   botTurnNudgeKey = "";
+  waitingStartKickInFlightId = "";
   deckOrderSyncRoomId = "";
   matchmakingBusy = false;
   window.GameSession = null;
@@ -1164,6 +1167,60 @@ async function startRoomIfNeeded(id) {
     logFirestoreError("startRoomIfNeeded", err);
     throw err;
   }
+}
+
+function scheduleWaitingCountdown(id, roomData) {
+  clearTimer();
+  if (!id || !roomData || String(roomData.status || "") !== "waiting") return;
+
+  const kickServerStart = () => {
+    if (waitingStartKickInFlightId === String(id)) return;
+    waitingStartKickInFlightId = String(id);
+    startRoomIfNeeded(id)
+      .catch((err) => {
+        setStatus(err?.message || "Erreur démarrage");
+      })
+      .finally(() => {
+        if (waitingStartKickInFlightId === String(id)) {
+          waitingStartKickInFlightId = "";
+        }
+      });
+  };
+
+  const updateCountdown = () => {
+    if (!roomId || String(roomId) !== String(id)) {
+      clearTimer();
+      return;
+    }
+    const liveRoom = lastRoomSnapshotData && String(roomId) === String(id) ? lastRoomSnapshotData : roomData;
+    const humans = Number.isFinite(Number(liveRoom?.humanCount)) ? Number(liveRoom.humanCount) : 1;
+    const deadlineMs = Number.isFinite(Number(liveRoom?.waitingDeadlineMs)) ? Number(liveRoom.waitingDeadlineMs) : 0;
+
+    if (humans >= 4) {
+      clearTimer();
+      setStatus(`Salle en attente (${humans}/4). Tous les joueurs sont là, démarrage...`);
+      kickServerStart();
+      return;
+    }
+
+    if (deadlineMs <= 0) {
+      setStatus(`Salle en attente (${humans}/4). Le serveur prépare encore le démarrage.`);
+      return;
+    }
+
+    const remainingMs = Math.max(0, deadlineMs - Date.now());
+    if (remainingMs <= 0) {
+      clearTimer();
+      setStatus(`Salle en attente (${humans}/4). Démarrage...`);
+      kickServerStart();
+      return;
+    }
+
+    setStatus(`Salle en attente (${humans}/4). Démarrage dans ${Math.ceil(remainingMs / 1000)}s, puis les bots complètent si besoin.`);
+  };
+
+  updateCountdown();
+  startTimer = setInterval(updateCountdown, 250);
 }
 
 async function endGameClick() {
@@ -1828,9 +1885,7 @@ function watchRoom(id) {
       if (data.status === "waiting") {
         clearTurnTimer();
         setMatchLoading(true, "Connexion des joueurs en cours.");
-        const humans = data.humanCount || 1;
-        setStatus(`Salle en attente (${humans}/4). La partie démarre automatiquement dans 15s, puis les bots complètent la table si besoin.`);
-        if (humans >= 4) startRoomIfNeeded(id).catch((err) => setStatus(err.message || "Erreur start"));
+        scheduleWaitingCountdown(id, data);
         return;
       }
 
@@ -1955,19 +2010,13 @@ async function startMatchmaking() {
     if (matchRes.resumed === true) {
       setStatus(`Reconnexion salle (${roomId}). Position ${seatIndex + 1}/4`);
     } else if (matchRes.status === "waiting") {
-      setStatus(`Salle rejointe (${roomId}). Position ${seatIndex + 1}/4. Le lancement est automatique dans 15s.`);
+      setStatus(`Salle rejointe (${roomId}). Position ${seatIndex + 1}/4.`);
     } else {
       setStatus(`Salle prête (${roomId}). Position ${seatIndex + 1}/4`);
     }
     setLeaveRoomButtonVisible(true);
 
     watchRoom(roomId);
-    if (matchRes.status === "waiting") {
-      clearTimer();
-      startTimer = setTimeout(() => {
-        startRoomIfNeeded(roomId).catch((err) => setStatus(err.message || "Erreur démarrage"));
-      }, WAIT_MS);
-    }
   } catch (err) {
     matchmakingBusy = false;
     setMatchLoading(false);
