@@ -2257,6 +2257,10 @@ function shouldStartWaitingRoom(room = {}, nowMs = Date.now()) {
   return nowMs >= resolveWaitingDeadlineMs(room, nowMs);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function findActiveRoomForUser(uid) {
   const rooms = db.collection(ROOMS_COLLECTION);
   const membershipSnap = await rooms
@@ -2568,27 +2572,32 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
     if (resumedActive) return resumedActive;
   }
 
-  const waitingCandidates = await db
-    .collection(ROOMS_COLLECTION)
-    .where("status", "==", "waiting")
-    .limit(64)
-    .get();
+  for (let pass = 0; pass < 3; pass += 1) {
+    if (pass > 0) {
+      await delay(120 * pass);
+    }
 
-  const waitingDocs = waitingCandidates.docs
-    .slice()
-    .sort((a, b) => {
-      const humansLeft = safeInt(a.get("humanCount"));
-      const humansRight = safeInt(b.get("humanCount"));
-      if (humansRight !== humansLeft) return humansRight - humansLeft;
-      const left = timestampToMillis(a.get("createdAt"));
-      const right = timestampToMillis(b.get("createdAt"));
-      return left - right;
-    });
+    const waitingCandidates = await db
+      .collection(ROOMS_COLLECTION)
+      .where("status", "==", "waiting")
+      .limit(64)
+      .get();
 
-  for (const candidate of waitingDocs) {
-    const roomRef = candidate.ref;
-    try {
-      const joined = await db.runTransaction(async (tx) => {
+    const waitingDocs = waitingCandidates.docs
+      .slice()
+      .sort((a, b) => {
+        const humansLeft = safeInt(a.get("humanCount"));
+        const humansRight = safeInt(b.get("humanCount"));
+        if (humansRight !== humansLeft) return humansRight - humansLeft;
+        const left = timestampToMillis(a.get("createdAt"));
+        const right = timestampToMillis(b.get("createdAt"));
+        return left - right;
+      });
+
+    for (const candidate of waitingDocs) {
+      const roomRef = candidate.ref;
+      try {
+        const joined = await db.runTransaction(async (tx) => {
         const [roomSnap, walletSnap] = await Promise.all([
           tx.get(roomRef),
           tx.get(walletRef(uid)),
@@ -2745,22 +2754,23 @@ exports.joinMatchmaking = publicOnCall("joinMatchmaking", async (request) => {
           waitingDeadlineMs,
           privateDeckOrder: [],
         };
-      });
+        });
 
-      if (joined?.status === "playing") {
-        if (joined?.startRevealPending !== true) {
-          await processPendingBotTurns(String(joined.roomId || ""));
+        if (joined?.status === "playing") {
+          if (joined?.startRevealPending !== true) {
+            await processPendingBotTurns(String(joined.roomId || ""));
+          }
         }
-      }
-      if (joined?.skipped === true) {
+        if (joined?.skipped === true) {
+          continue;
+        }
+        return joined;
+      } catch (err) {
+        if (err instanceof HttpsError && err.code === "failed-precondition") {
+          throw err;
+        }
         continue;
       }
-      return joined;
-    } catch (err) {
-      if (err instanceof HttpsError && err.code === "failed-precondition") {
-        throw err;
-      }
-      continue;
     }
   }
 
