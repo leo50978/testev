@@ -6,7 +6,7 @@
         Vista por defecto en el Laboratorio de pruebas  
 		devildrey33_Lab->Opciones->Vista = Filas;
 
-        Ultima modificaci髇 el 14/12/2019
+        Ultima modificaci贸n el 14/12/2019
 */
 
 
@@ -17,6 +17,7 @@ var Domino_Opciones = function () {
     this.Descubierto       = "false";
     this.AniTurno          = "true";
     this.Ayuda             = "true";
+    this.LucesJugadores    = "true";
     this.Idioma            = 'es';
     this.Iniciar = function() {
         this.Idioma = this.IdiomaPorDefecto();
@@ -33,6 +34,7 @@ var Domino_Opciones = function () {
         if (window.localStorage.Descubierto)        this.Descubierto      = window.localStorage.getItem("Descubierto");
         if (window.localStorage.AniTurno)           this.AniTurno         = window.localStorage.getItem("AniTurno");
         if (window.localStorage.Ayuda)              this.Ayuda            = window.localStorage.getItem("Ayuda");
+        if (window.localStorage.LucesJugadores)     this.LucesJugadores   = window.localStorage.getItem("LucesJugadores");
         
         this.NombresPorDefecto();
 /*        if (window.localStorage.Jugador1)           this.NombreJugador[0] = window.localStorage.getItem("Jugador1");
@@ -47,6 +49,9 @@ var Domino_Opciones = function () {
         document.getElementById("Opciones_Descubierto").checked = (this.Descubierto === "true") ? true : false;
         document.getElementById("Opciones_AnimarTurno").checked = (this.AniTurno === "true")    ? true : false;
         document.getElementById("Opciones_Ayuda").checked       = (this.Ayuda === "true")       ? true : false;
+        if (document.getElementById("Opciones_LucesJugadores")) {
+            document.getElementById("Opciones_LucesJugadores").checked = (this.LucesJugadores === "true") ? true : false;
+        }
         
 /*        document.getElementById("Opciones_Descubierto").setAttribute("checked", (this.Descubierto === "false") ? "" : "checked");
         document.getElementById("Opciones_AnimarTurno").setAttribute("checked", (this.AniTurno === "false") ? "" : "checked");
@@ -61,7 +66,7 @@ var Domino_Opciones = function () {
         document.getElementById("NEquipo2").value = this.NombreEquipo[1];*/
     };
     
-    // Funci髇 que determina el idioma por defecto en la primera sesi髇, si ninguno coincide, se elige Ingles.
+    // Funci贸n que determina el idioma por defecto en la primera sesi贸n, si ninguno coincide, se elige Ingles.
     this.IdiomaPorDefecto = function() {
         var Idioma = navigator.language || navigator.userLanguage;
         // Si coincide con uno de los idiomas, lo devuelvo
@@ -70,7 +75,7 @@ var Domino_Opciones = function () {
         return 'en';
     };
     
-    // Funci髇 que asigna los nombres (de equipo i jugadores) por defecto, o los que hay guardados en el local storage
+    // Funci贸n que asigna los nombres (de equipo i jugadores) por defecto, o los que hay guardados en el local storage
     this.NombresPorDefecto = function() {
         var Nombres = { 
             'en' : { 
@@ -146,6 +151,13 @@ var Domino_Opciones = function () {
         if (Ayuda === false)      this.Ayuda = "false";
         else if (Ayuda === true)  this.Ayuda = "true";
         else                      this.Ayuda = Ayuda;
+    };
+
+    this.AsignarLucesJugadores = function(LucesJugadores) {
+        window.localStorage.setItem("LucesJugadores", LucesJugadores);
+        if (LucesJugadores === false)      this.LucesJugadores = "false";
+        else if (LucesJugadores === true)  this.LucesJugadores = "true";
+        else                               this.LucesJugadores = LucesJugadores;
     };
     
     this.AsignarIdioma = function(Idioma) {

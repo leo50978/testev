@@ -111,6 +111,16 @@ var Domino_UI = function() {
         document.getElementById("Opciones_Ayuda").onclick = function() {
             Domino.Partida.Opciones.AsignarAyuda(document.getElementById("Opciones_Ayuda").checked);
         };
+
+        // Boton luces de jugadores
+        document.getElementById("PlayerLightsToggleBtn").onclick = function() {
+            var Activo = (Domino.Partida.Opciones.LucesJugadores === "true");
+            Domino.Partida.Opciones.AsignarLucesJugadores(!Activo);
+            if (typeof(Domino.ActualizarLucesJugadoresVisibilidad) === "function") {
+                Domino.ActualizarLucesJugadoresVisibilidad();
+            }
+            UI.ActualizarBotonLucesJugadores();
+        };
         
         // Botones para cambiar el idioma
         // Boton English
@@ -138,8 +148,22 @@ var Domino_UI = function() {
         
         // Modo solo: no hay objetivo por puntos
         document.getElementById("BloquePuntosPartida").style.display = "none";
+        this.ActualizarBotonLucesJugadores();
                 
         this.MostrarEmpezar();
+    };
+
+    this.ActualizarBotonLucesJugadores = function() {
+        var Btn = document.getElementById("PlayerLightsToggleBtn");
+        var Txt = document.getElementById("PlayerLightsToggleText");
+        if (!Btn || !Txt) return;
+
+        var Activo = (Domino.Partida.Opciones.LucesJugadores === "true");
+        Txt.textContent = Activo ? "Lumieres ON" : "Lumieres OFF";
+        Btn.setAttribute("aria-pressed", Activo ? "true" : "false");
+        Btn.classList.toggle("bg-[#4d5b88]/80", Activo);
+        Btn.classList.toggle("border-amber-300/40", Activo);
+        Btn.classList.toggle("text-amber-100", Activo);
     };
     
     // Mostrar menú para empezar una partida

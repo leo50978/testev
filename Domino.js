@@ -215,6 +215,8 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
     DragInfo        : { idx : -1, rama : "", ox : 0, oz : 0 },
     ZoomMovilOffset : 0,
     PinchZoom       : { Activa : false, DistanciaInicial : 0, ZoomInicial : 0 },
+    OperaGlowTexture: null,
+    LucesJugadores  : [],
 //    Opciones        : new Domino_Opciones(),
     ObtenerDistanciaTouches : function(Evento) {
         if (!Evento || !Evento.touches || Evento.touches.length < 2) return 0;
@@ -266,6 +268,97 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
             Texturas.Textura[i].generateMipmaps = true;
             Texturas.Textura[i].anisotropy = targetAnisotropy;
             Texturas.Textura[i].needsUpdate = true;
+        }
+    },
+    CrearTexturaOperaGlow : function() {
+        if (this.OperaGlowTexture !== null) return this.OperaGlowTexture;
+
+        var Canvas = document.createElement("canvas");
+        Canvas.width = 256;
+        Canvas.height = 256;
+        var Ctx = Canvas.getContext("2d");
+        var Grad = Ctx.createRadialGradient(128, 128, 18, 128, 128, 128);
+        Grad.addColorStop(0, "rgba(255, 248, 228, 0.95)");
+        Grad.addColorStop(0.28, "rgba(255, 230, 168, 0.56)");
+        Grad.addColorStop(0.58, "rgba(255, 211, 118, 0.22)");
+        Grad.addColorStop(1, "rgba(255, 211, 118, 0)");
+        Ctx.fillStyle = Grad;
+        Ctx.fillRect(0, 0, Canvas.width, Canvas.height);
+
+        this.OperaGlowTexture = new THREE.Texture(Canvas);
+        this.OperaGlowTexture.needsUpdate = true;
+        this.OperaGlowTexture.minFilter = THREE.LinearFilter;
+        this.OperaGlowTexture.magFilter = THREE.LinearFilter;
+        this.OperaGlowTexture.generateMipmaps = false;
+        return this.OperaGlowTexture;
+    },
+    CrearLuzJugadorVisual : function(Config) {
+        var Grupo = new THREE.Group();
+        var GlowTexture = this.CrearTexturaOperaGlow();
+        var Halo = new THREE.Mesh(
+            new THREE.PlaneGeometry(Config.haloW, Config.haloH),
+            new THREE.MeshBasicMaterial({
+                map         : GlowTexture,
+                color       : 0xffedb3,
+                transparent : true,
+                opacity     : Config.haloOpacity,
+                depthWrite  : false,
+                blending    : THREE.AdditiveBlending,
+                side        : THREE.DoubleSide
+            })
+        );
+        Halo.rotation.x = -Math.PI / 2;
+        Halo.position.y = 0.12;
+        Halo.renderOrder = 1;
+        Halo.raycast = function() {};
+        Grupo.add(Halo);
+
+        var Haz = new THREE.Mesh(
+            new THREE.ConeGeometry(Config.haloRadius, Config.hazAlto, 18, 1, true),
+            new THREE.MeshBasicMaterial({
+                color       : 0xfff4cf,
+                transparent : true,
+                opacity     : Config.hazOpacity,
+                depthWrite  : false,
+                blending    : THREE.AdditiveBlending,
+                side        : THREE.DoubleSide
+            })
+        );
+        Haz.position.y = (Config.hazAlto / 2) + 0.1;
+        Haz.renderOrder = 1;
+        Haz.raycast = function() {};
+        Grupo.add(Haz);
+
+        Grupo.position.set(Config.x, 0, Config.z);
+        Grupo.visible = false;
+        return Grupo;
+    },
+    CrearLucesJugadores : function() {
+        if (this.LucesJugadores.length > 0 || typeof(this.Escena) === "undefined") return;
+
+        var Configs = [
+            { x : 0,   z : 5.5,   haloW : 12.6, haloH : 4.8,  haloRadius : 4.15, hazAlto : 7.8, haloOpacity : 0.23, hazOpacity : 0.08 },
+            { x : 15,  z : -2.75, haloW : 4.8,  haloH : 12.6, haloRadius : 4.15, hazAlto : 7.8, haloOpacity : 0.21, hazOpacity : 0.08 },
+            { x : 0,   z : -12,   haloW : 12.6, haloH : 4.8,  haloRadius : 4.15, hazAlto : 7.8, haloOpacity : 0.2,  hazOpacity : 0.075 },
+            { x : -15, z : -2.75, haloW : 4.8,  haloH : 12.6, haloRadius : 4.15, hazAlto : 7.8, haloOpacity : 0.21, hazOpacity : 0.08 }
+        ];
+
+        for (var i = 0; i < Configs.length; i++) {
+            var Luz = this.CrearLuzJugadorVisual(Configs[i]);
+            this.LucesJugadores.push(Luz);
+            this.Escena.add(Luz);
+        }
+    },
+    ActualizarLucesJugadoresVisibilidad : function() {
+        if (!Array.isArray(this.LucesJugadores) || this.LucesJugadores.length === 0) return;
+
+        var Visible = true;
+        if (this.Partida && this.Partida.Opciones && this.Partida.Opciones.LucesJugadores === "false") {
+            Visible = false;
+        }
+
+        for (var i = 0; i < this.LucesJugadores.length; i++) {
+            this.LucesJugadores[i].visible = Visible;
         }
     },
     
@@ -338,6 +431,8 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
         this.CrearLuces();
         this.Partida.Opciones.Iniciar();
         UI.Iniciar();
+        this.CrearLucesJugadores();
+        this.ActualizarLucesJugadoresVisibilidad();
         
         this.Redimensionar();
 //        this.Camara.Rotar();
