@@ -79,34 +79,7 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
     // FunciÃ³n que se llama al redimensionar el documento
     Redimensionar   : function() {  
         if (typeof(this.Camara) === "undefined") return;
-        this.EsMovilVisual = this.EsPantallaMovil();
-        var portrait = (window.innerHeight > window.innerWidth);
-        var mobileCameraBackOffset = 2.0;
-        var distancia = 10;
-        var altura = 10;
-        var fov = 75;
-
-        if (this.EsMovilVisual === true) {
-            if (portrait) {
-                distancia = 13.2 + mobileCameraBackOffset;
-                altura = 8.9;
-                fov = 72;
-            }
-            else {
-                distancia = 9.4 + mobileCameraBackOffset;
-                altura = 7.7;
-                fov = 68;
-            }
-        }
-        else if (portrait) {
-            distancia = 18;
-        }
-
-        this.Camara.Rotacion.Distancia = distancia;
-        this.Camara.fov = fov;
-        this.Camara.updateProjectionMatrix();
-        this.Camara.position.set(0, altura, this.Camara.Rotacion.Distancia);
-        this.Camara.lookAt(this.Camara.Rotacion.MirarHacia);
+        this.ActualizarCamaraResponsive();
 
         if (this.Context && typeof(this.Context.setPixelRatio) === "function") {
             var dpr = (typeof(window.devicePixelRatio) === "number" && window.devicePixelRatio > 0) ? window.devicePixelRatio : 1;
@@ -117,6 +90,50 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
         if (typeof(this.ActualizarCalidadTexturas) === "function") {
             this.ActualizarCalidadTexturas();
         }
+    },
+    ActualizarCamaraResponsive : function() {
+        if (typeof(this.Camara) === "undefined") return;
+        this.EsMovilVisual = this.EsPantallaMovil();
+        var portrait = (window.innerHeight > window.innerWidth);
+        var mobileCameraBackOffset = 2.0;
+        var distancia = 10;
+        var altura = 10;
+        var fov = 75;
+        var distanciaBaseMovil = 0;
+        var alturaBaseMovil = 0;
+        var zoomAplicado = 0;
+
+        if (this.EsMovilVisual === true) {
+            if (portrait) {
+                distanciaBaseMovil = 13.2 + mobileCameraBackOffset;
+                alturaBaseMovil = 8.9;
+                fov = 72;
+            }
+            else {
+                distanciaBaseMovil = 9.4 + mobileCameraBackOffset;
+                alturaBaseMovil = 7.7;
+                fov = 68;
+            }
+
+            distancia = Math.min(
+                distanciaBaseMovil + (portrait ? 4.8 : 4.2),
+                Math.max(
+                    distanciaBaseMovil - (portrait ? 1.1 : 0.9),
+                    distanciaBaseMovil + this.ZoomMovilOffset
+                )
+            );
+            zoomAplicado = distancia - distanciaBaseMovil;
+            altura = alturaBaseMovil + (zoomAplicado * (portrait ? 0.26 : 0.2));
+        }
+        else if (portrait) {
+            distancia = 18;
+        }
+
+        this.Camara.Rotacion.Distancia = distancia;
+        this.Camara.fov = fov;
+        this.Camara.updateProjectionMatrix();
+        this.Camara.position.set(0, altura, this.Camara.Rotacion.Distancia);
+        this.Camara.lookAt(this.Camara.Rotacion.MirarHacia);
     },
     // FunciÃ³n que se llama al hacer scroll en el documento    
     Scroll          : function() {    },
@@ -141,6 +158,11 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
     MouseLeave      : function(Evento) { },
     // FunciÃ³n que se llama al presionar la pantalla
     TouchStart      : function(Evento) { 
+        if (Evento && Evento.touches && Evento.touches.length >= 2) {
+            if (Evento.cancelable === true) Evento.preventDefault();
+            this.IniciarPinchZoom(Evento);
+            return;
+        }
         this.MouseMovido = true;
         this.PosMouse.x =   ( Evento.touches[0].clientX / window.innerWidth ) * 2 - 1;
 	this.PosMouse.y = - ( Evento.touches[0].clientY / window.innerHeight ) * 2 + 1;        
@@ -151,6 +173,11 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
     
     // FunciÃ³n que se llama al mover la presiÃ³n sobre la pantalla
     TouchMove      : function(Evento) { 
+        if (this.PinchZoom.Activa === true || (Evento && Evento.touches && Evento.touches.length >= 2)) {
+            if (Evento.cancelable === true) Evento.preventDefault();
+            this.ActualizarPinchZoom(Evento);
+            return;
+        }
         this.MouseMovido = true;
         this.PosMouse.x =   ( Evento.touches[0].clientX / window.innerWidth ) * 2 - 1;
 	this.PosMouse.y = - ( Evento.touches[0].clientY / window.innerHeight ) * 2 + 1;
@@ -158,6 +185,12 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
     },    
     
     TouchEnd      : function(Evento) { 
+        if (this.PinchZoom.Activa === true) {
+            if (!Evento.touches || Evento.touches.length < 2) {
+                this.PinchZoom.Activa = false;
+            }
+            return;
+        }
 /*        this.MouseMovido = true;
         this.PosMouse.x =   ( Evento.touches[0].clientX / window.innerWidth ) * 2 - 1;
 	this.PosMouse.y = - ( Evento.touches[0].clientY / window.innerHeight ) * 2 + 1;        */
@@ -180,7 +213,43 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
     PuntoDrag       : new THREE.Vector3(),
     DragActiva      : false,
     DragInfo        : { idx : -1, rama : "", ox : 0, oz : 0 },
+    ZoomMovilOffset : 0,
+    PinchZoom       : { Activa : false, DistanciaInicial : 0, ZoomInicial : 0 },
 //    Opciones        : new Domino_Opciones(),
+    ObtenerDistanciaTouches : function(Evento) {
+        if (!Evento || !Evento.touches || Evento.touches.length < 2) return 0;
+        var dx = Evento.touches[0].clientX - Evento.touches[1].clientX;
+        var dy = Evento.touches[0].clientY - Evento.touches[1].clientY;
+        return Math.sqrt((dx * dx) + (dy * dy));
+    },
+    CancelarDrag : function() {
+        if (this.DragActiva === false || this.DragInfo.idx < 0) return;
+        if (typeof(this.Partida.Ficha[this.DragInfo.idx]) !== "undefined") {
+            var F = this.Partida.Ficha[this.DragInfo.idx].Ficha;
+            F.position.set(this.DragInfo.ox, F.position.y, this.DragInfo.oz);
+        }
+        this.DragActiva = false;
+        this.DragInfo.idx = -1;
+        this.DragInfo.rama = "";
+    },
+    IniciarPinchZoom : function(Evento) {
+        if (this.EsMovilVisual !== true) return;
+        var distancia = this.ObtenerDistanciaTouches(Evento);
+        if (distancia <= 0) return;
+        this.CancelarDrag();
+        this.PinchZoom.Activa = true;
+        this.PinchZoom.DistanciaInicial = distancia;
+        this.PinchZoom.ZoomInicial = this.ZoomMovilOffset;
+    },
+    ActualizarPinchZoom : function(Evento) {
+        if (this.EsMovilVisual !== true || this.PinchZoom.Activa !== true) return;
+        var distancia = this.ObtenerDistanciaTouches(Evento);
+        if (distancia <= 0 || this.PinchZoom.DistanciaInicial <= 0) return;
+        var sensibilidad = (window.innerHeight > window.innerWidth) ? 120 : 105;
+        var delta = (distancia - this.PinchZoom.DistanciaInicial) / sensibilidad;
+        this.ZoomMovilOffset = this.PinchZoom.ZoomInicial - delta;
+        this.ActualizarCamaraResponsive();
+    },
     ActualizarCalidadTexturas : function() {
         if (!this.Context || !this.Context.capabilities || !Texturas || !Array.isArray(Texturas.Textura)) return;
 
@@ -207,6 +276,9 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
         
         // VERSIÃN DEL JUEGO A MANO
         document.getElementById("VersionDomino").innerHTML = this.VersionDomino;
+        if (this.Cabecera && this.Cabecera.style) {
+            this.Cabecera.style.touchAction = "none";
+        }
         
         // Fijo el modo landscape (NO VA...)
 //        screen.orientation.lock("landscape");
