@@ -518,6 +518,9 @@ export function renderPage2(user, options = {}) {
             <button id="startGameBtn" type="button" class="h-14 w-full rounded-[18px] border border-[#ffb26e] bg-[#F57C00] px-8 text-base font-semibold text-white shadow-[9px_9px_20px_rgba(155,78,25,0.45),-7px_-7px_16px_rgba(255,173,96,0.2)] transition hover:-translate-y-0.5">
                 LANCER UNE PARTIE
             </button>
+            <button id="tournamentBtn" type="button" class="h-12 w-full rounded-[16px] border border-white/25 bg-white/10 px-8 text-sm font-semibold text-white shadow-[8px_8px_18px_rgba(22,29,45,0.35),-6px_-6px_14px_rgba(118,131,172,0.2)] backdrop-blur-md transition hover:-translate-y-0.5 hover:bg-white/15">
+              Tournois
+            </button>
             <button id="gameRulesBtn" type="button" class="h-12 w-full rounded-[16px] border border-white/25 bg-white/10 px-8 text-sm font-semibold text-white shadow-[8px_8px_18px_rgba(22,29,45,0.35),-6px_-6px_14px_rgba(118,131,172,0.2)] backdrop-blur-md transition hover:-translate-y-0.5 hover:bg-white/15">
               Les règles
             </button>
@@ -706,6 +709,7 @@ export function renderPage2(user, options = {}) {
   const stakeUnavailableOverlay = document.getElementById("stakeUnavailableOverlay");
   const stakeUnavailablePanel = document.getElementById("stakeUnavailablePanel");
   const stakeUnavailableClose = document.getElementById("stakeUnavailableClose");
+  const tournamentBtn = document.getElementById("tournamentBtn");
   if (logo && logoFallback) {
     logo.addEventListener("error", () => {
       logo.classList.add("hidden");
@@ -857,6 +861,12 @@ export function renderPage2(user, options = {}) {
   }
   if (stakeUnavailablePanel) {
     stakeUnavailablePanel.addEventListener("click", (ev) => ev.stopPropagation());
+  }
+
+  if (tournamentBtn) {
+    tournamentBtn.addEventListener("click", () => {
+      window.location.href = "./tournois.html";
+    });
   }
 
   if (stakeOptionsGrid) {

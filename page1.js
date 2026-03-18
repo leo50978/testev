@@ -308,8 +308,13 @@ function syncOneClickModalStep(requestedStep = 0) {
   const safeStep = Math.max(0, Math.min(Number(requestedStep) || 0, totalSteps - 1));
   overlay.dataset.step = String(safeStep);
   if (modalCard) {
-    const expandedStep = safeStep === totalSteps - 1;
-    modalCard.style.minHeight = expandedStep ? "30rem" : "27rem";
+    const isMobile = window.matchMedia("(max-width: 640px)").matches;
+    const mobileHeights = ["24.5rem", "25.5rem", "25.5rem", "25rem", "28rem"];
+    const desktopHeights = ["24rem", "25rem", "25rem", "24.5rem", "26.5rem"];
+    const targetHeight = (isMobile ? mobileHeights : desktopHeights)[safeStep] || (isMobile ? "25rem" : "24.5rem");
+    modalCard.style.height = targetHeight;
+    modalCard.style.minHeight = targetHeight;
+    modalCard.style.maxHeight = "calc(100dvh - 1.5rem)";
   }
 
   steps.forEach((stepNode, index) => {
@@ -354,7 +359,7 @@ function ensureOneClickModal() {
     overlay.id = "oneClickAuthOverlay";
     overlay.className = "fixed inset-0 z-[5400] hidden items-center justify-center bg-black/65 p-3 backdrop-blur-md sm:p-4";
     overlay.innerHTML = `
-      <div id="oneClickAuthCard" class="relative flex min-h-[27rem] w-full max-w-[22.5rem] flex-col overflow-hidden rounded-[26px] border border-white/18 bg-[radial-gradient(circle_at_top,rgba(85,98,139,0.45),rgba(18,24,40,0.96)_58%)] p-4 text-white shadow-[18px_18px_44px_rgba(11,16,29,0.58),-12px_-12px_28px_rgba(99,112,152,0.16)] backdrop-blur-xl sm:max-w-[30rem] sm:rounded-[28px] sm:p-5">
+      <div id="oneClickAuthCard" class="relative flex h-[24.5rem] min-h-[24.5rem] w-full max-w-[22.5rem] flex-col overflow-hidden rounded-[26px] border border-white/18 bg-[radial-gradient(circle_at_top,rgba(85,98,139,0.45),rgba(18,24,40,0.96)_58%)] p-4 text-white shadow-[18px_18px_44px_rgba(11,16,29,0.58),-12px_-12px_28px_rgba(99,112,152,0.16)] backdrop-blur-xl sm:max-w-[30rem] sm:rounded-[28px] sm:p-5">
         <button
           id="oneClickAuthCloseBtn"
           type="button"

@@ -77,6 +77,22 @@ function formatAmount(value) {
   }).format(amount);
 }
 
+function computeOrderAmount(order) {
+  if (typeof order?.amount === "number" && Number.isFinite(order.amount)) {
+    return Math.max(0, Math.floor(order.amount));
+  }
+  if (!Array.isArray(order?.items)) return 0;
+  return Math.max(0, Math.floor(order.items.reduce((sum, item) => {
+    const price = Number(item?.price) || 0;
+    const quantity = Number(item?.quantity) || 1;
+    return sum + (price * quantity);
+  }, 0)));
+}
+
+function computeReservedWithdrawalAmount(withdrawal) {
+  return Math.max(0, Math.floor(Number(withdrawal?.requestedAmount ?? withdrawal?.amount) || 0));
+}
+
 function escapeHtml(input) {
   return String(input || "")
     .replace(/&/g, "&amp;")
@@ -180,7 +196,9 @@ function renderOrderCard(order) {
   const kind = order.type === "withdrawal" ? "withdrawal" : "order";
   const status = getOrderUiStatus(order);
   const code = escapeHtml(order.uniqueCode || order.id || "-");
-  const amountValue = Number(order.requestedAmount ?? order.amount ?? 0);
+  const amountValue = kind === "withdrawal"
+    ? computeReservedWithdrawalAmount(order)
+    : computeOrderAmount(order);
   const amount = formatAmount(amountValue);
   const createdAt = order.createdAt ? new Date(order.createdAt).toLocaleString() : "-";
   const title = kind === "withdrawal" ? "Retrait" : "Commande";
@@ -414,10 +432,10 @@ function attachWithdrawalsListener() {
 function refreshBalanceFromCaches() {
   const approvedDeposits = cachedOrders
     .filter((o) => o.status === "approved")
-    .reduce((sum, o) => sum + (Number(o.amount) || 0), 0);
+    .reduce((sum, o) => sum + computeOrderAmount(o), 0);
   const reservedWithdrawals = cachedWithdrawals
     .filter((o) => o.status !== "rejected")
-    .reduce((sum, o) => sum + Number(o.requestedAmount ?? o.amount ?? 0), 0);
+    .reduce((sum, o) => sum + computeReservedWithdrawalAmount(o), 0);
   if (BALANCE_DEBUG) {
     console.log("[BALANCE_DEBUG][SOLDE] refreshBalanceFromCaches", {
       approvedDeposits,

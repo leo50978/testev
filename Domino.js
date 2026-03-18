@@ -88,14 +88,14 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
 
         if (this.EsMovilVisual === true) {
             if (portrait) {
-                distancia = 11.5 + mobileCameraBackOffset;
-                altura = 8.4;
-                fov = 68;
+                distancia = 13.2 + mobileCameraBackOffset;
+                altura = 8.9;
+                fov = 72;
             }
             else {
-                distancia = 7.8 + mobileCameraBackOffset;
-                altura = 7.2;
-                fov = 64;
+                distancia = 9.4 + mobileCameraBackOffset;
+                altura = 7.7;
+                fov = 68;
             }
         }
         else if (portrait) {
@@ -238,25 +238,6 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
         this.Suelo.receiveShadow = true;
         this.Escena.add(this.Suelo);
 
-        // Capa brillante (verre) para reforzar l'effet glassmorphism
-        this.SueloBrillo = new THREE.Mesh(
-            new THREE.PlaneGeometry(240, 240),
-            new THREE.MeshPhongMaterial({
-                color: 0x7e90bc,
-                specular: 0xffffff,
-                shininess: 120,
-                transparent: true,
-                opacity: 0.16,
-                side: THREE.DoubleSide
-            })
-        );
-        this.SueloBrillo.rotation.x = -Math.PI / 2;
-        this.SueloBrillo.position.y = -0.19;
-        this.SueloBrillo.position.z = 15;
-        this.SueloBrillo.castShadow = false;
-        this.SueloBrillo.receiveShadow = false;
-        this.Escena.add(this.SueloBrillo);
-        
         // Inicio las texturas del domino
         Texturas.Iniciar();
 
@@ -338,23 +319,6 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
     
     
     CrearLuces : function() {
-        // Luz direccional
-        this.DirLight = new THREE.DirectionalLight( 0xfff1e0, 0.281 );
-        this.DirLight.position.set( 0, 40, -30 ); //.normalize();
-//        this.DirLight.position.multiplyScalar( 20 );
-        this.DirLight.castShadow = true;
-        var shadowSize = (this.EsMovilVisual === true) ? 1024 : 2048;
-        this.DirLight.shadow.mapSize.width = shadowSize;
-        this.DirLight.shadow.mapSize.height = shadowSize;
-        var d = 40;
-        this.DirLight.shadow.camera.left = -d;
-        this.DirLight.shadow.camera.right = d;
-        this.DirLight.shadow.camera.top = d;
-        this.DirLight.shadow.camera.bottom = -d;
-        this.DirLight.shadow.camera.far = (this.EsMovilVisual === true) ? 180 : 3500;
-//        this.DirLight.target = this.Ficha.Ficha;
-        this.Escena.add( this.DirLight );
-        
         // Luz de ambiente  
         this.HemiLight = new THREE.HemisphereLight( 0xeeeeee, 0xffffff, 0.7 );
         this.HemiLight.color.setHSL( 0.6, 0.6, 0.6 );
@@ -363,7 +327,7 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
         this.Escena.add( this.HemiLight );                 
     },
         
-    // Mueve la luz y la cÃ¡mara al jugador especificado
+    // Mantiene la orientacion de la camara del turno sin desplazar la luz direccional.
     AnimarLuz       : function(NumJugador) {
         if (typeof(this.AniLuz) !== "undefined") {
             this.AniLuz.Terminar();
@@ -392,15 +356,11 @@ DominoThree.prototype = Object.assign( Object.create(ObjetoCanvas.prototype) , {
                 break;
         }
         this.AniLuz = Animaciones.CrearAnimacion([
-                    { Paso : { PX : this.DirLight.position.x , PZ : this.DirLight.position.z, RZ : this.Camara.rotation.y  } },
-                    { Paso : { PX : PosX,                      PZ : PosZ                    , RZ : RotZ  }, Tiempo : 400, FuncionTiempo : FuncionesTiempo.SinInOut }
+                    { Paso : { RZ : this.Camara.rotation.y } },
+                    { Paso : { RZ : RotZ }, Tiempo : 400, FuncionTiempo : FuncionesTiempo.SinInOut }
             ], { FuncionActualizar : function(Valores) { 
-                    this.DirLight.position.set(Valores.PX, 40, Valores.PZ);                    
-                    this.DirLight.lookAt(this.Camara.Rotacion.MirarHacia);
                     this.Camara.rotation.y = Valores.RZ;
                     this.Camara.lookAt(this.Camara.Rotacion.MirarHacia);
-                    //this.DirLight.needUpdate = true;
-//                    this.DirLight.position.multiplyScalar( 20 );
             }.bind(this) });
         this.AniLuz.Iniciar();
     },

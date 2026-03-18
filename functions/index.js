@@ -1,10 +1,18 @@
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 const crypto = require("node:crypto");
 const webpush = require("web-push");
+
+// Avoid metadata-server lookups when project env vars are missing during local analysis/deploy
+if (!process.env.FIREBASE_CONFIG) {
+  const projectId = process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || process.env.PROJECT_ID || "";
+  if (projectId) {
+    process.env.FIREBASE_CONFIG = JSON.stringify({ projectId });
+  }
+}
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -65,12 +73,18 @@ const DEFAULT_BOT_DIFFICULTY = "expert";
 const ROOM_WAIT_MS = 15 * 1000;
 const ROOM_DISCONNECT_TAKEOVER_MS = 5 * 1000;
 const ROOM_DISCONNECT_GRACE_MS = 15 * 1000;
-const BOT_DIFFICULTY_LEVELS = new Set(["amateur", "expert", "ultra"]);
+const BOT_DIFFICULTY_LEVELS = new Set(["amateur", "expert", "ultra", "userpro"]);
 const BOT_DIFFICULTY_LOOKAHEAD = Object.freeze({
   amateur: 0,
   expert: 3,
   ultra: 5,
+  userpro: 0,
 });
+const USER_TOURNAMENTS_COLLECTION = "userTournaments";
+const USER_TOURNAMENT_SLOT_COUNT = 5;
+const USER_TOURNAMENT_DURATION_MS = 15 * 60 * 1000;
+const USER_TOURNAMENT_MIN_BOTS = 11; // user + 11 = 12 players
+const USER_TOURNAMENT_MAX_BOTS = 19; // user + 19 = 20 players
 const TILE_VALUES = Object.freeze([
   [0, 0], [0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6],
   [1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6],
@@ -128,6 +142,67 @@ function safeSignedInt(value) {
   return Number.isFinite(n) ? Math.trunc(n) : 0;
 }
 
+function computeOrderAmount(order) {
+  if (typeof order?.amount === "number" && Number.isFinite(order.amount)) {
+    return safeInt(order.amount);
+  }
+  if (!Array.isArray(order?.items)) return 0;
+  return safeInt(order.items.reduce((sum, item) => {
+    const price = Number(item?.price) || 0;
+    const quantity = Number(item?.quantity) || 1;
+    return sum + (price * quantity);
+  }, 0));
+}
+
+function computeReservedWithdrawalAmount(withdrawal) {
+  return safeInt(withdrawal?.requestedAmount ?? withdrawal?.amount);
+}
+
+function computeWalletAvailableGourdes({
+  orders = [],
+  withdrawals = [],
+  exchangedGourdes = 0,
+} = {}) {
+  const approvedDepositsHtg = (Array.isArray(orders) ? orders : []).reduce(
+    (sum, item) => sum + computeOrderAmount(item),
+    0
+  );
+  const reservedWithdrawalsHtg = (Array.isArray(withdrawals) ? withdrawals : []).reduce((sum, item) => {
+    if (item?.status === "rejected") return sum;
+    return sum + computeReservedWithdrawalAmount(item);
+  }, 0);
+  const baseBalanceHtg = Math.max(0, approvedDepositsHtg - reservedWithdrawalsHtg);
+  const exchanged = safeSignedInt(exchangedGourdes);
+
+  return {
+    approvedDepositsHtg,
+    reservedWithdrawalsHtg,
+    baseBalanceHtg,
+    exchangedGourdes: exchanged,
+    availableBalanceHtg: Math.max(0, baseBalanceHtg - exchanged),
+  };
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function randomInt(min, max) {
+  const low = Math.floor(min);
+  const high = Math.floor(max);
+  if (high <= low) return low;
+  return low + Math.floor(Math.random() * (high - low + 1));
+}
+
+function seededInt(seed, min, max) {
+  const low = Math.floor(min);
+  const high = Math.floor(max);
+  if (high <= low) return low;
+  let x = Math.sin(seed) * 10000;
+  x = x - Math.floor(x);
+  return low + Math.floor(x * (high - low + 1));
+}
+
 function sanitizeText(value, maxLength = 160) {
   return String(value || "")
     .replace(/[\u0000-\u001f\u007f]/g, " ")
@@ -158,6 +233,14 @@ function sanitizePublicAsset(value, maxLength = 400) {
   if (!out) return "";
   if (/^(https:\/\/|\.\/|\/)/i.test(out)) return out;
   return "";
+}
+
+function userTournamentMetaRef(uid) {
+  return db.collection(USER_TOURNAMENTS_COLLECTION).doc(uid);
+}
+
+function userTournamentSessionRef(uid, sessionId) {
+  return userTournamentMetaRef(uid).collection("sessions").doc(sessionId);
 }
 
 function sanitizePaymentMethodAsset(value, maxLength = 180) {
@@ -781,6 +864,17 @@ function assertFinanceAdmin(request) {
     throw new HttpsError("permission-denied", "Accès administrateur requis.");
   }
   return authData;
+}
+
+async function verifyIdTokenFromRequest(req) {
+  const authHeader = String(req?.headers?.authorization || req?.headers?.Authorization || "");
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  if (!token) return null;
+  try {
+    return await admin.auth().verifyIdToken(token);
+  } catch (_) {
+    return null;
+  }
 }
 
 function normalizeBotDifficulty(value) {
@@ -1862,6 +1956,12 @@ function chooseStrategicMove(room, state, seat, options = {}) {
 
 function chooseBotMove(room, state, seat) {
   const difficulty = normalizeBotDifficulty(room?.botDifficulty);
+  if (difficulty === "userpro") {
+    const legalMoves = getLegalMovesForSeat(state, seat);
+    if (legalMoves.length === 0) return buildPassMoveForSeat(seat);
+    const randomIdx = Math.floor(Math.random() * legalMoves.length);
+    return buildPlayMoveFromLegal(seat, legalMoves[randomIdx]);
+  }
   return chooseStrategicMove(room, state, seat, {
     lookaheadPlies: safeInt(BOT_DIFFICULTY_LOOKAHEAD[difficulty]),
   });
@@ -2150,17 +2250,12 @@ async function applyWalletMutationTx(tx, options) {
       ),
     ]);
 
-    const approvedDeposits = ordersSnap.docs.reduce(
-      (sum, item) => sum + safeInt(item.data()?.amount),
-      0
-    );
-    const reservedWithdrawals = withdrawalsSnap.docs.reduce((sum, item) => {
-      const withdrawal = item.data() || {};
-      if (withdrawal.status === "rejected") return sum;
-      return sum + safeInt(withdrawal.requestedAmount ?? withdrawal.amount);
-    }, 0);
-    const baseBalanceHtg = Math.max(0, approvedDeposits - reservedWithdrawals);
-    const availableToConvertHtg = Math.max(0, baseBalanceHtg - beforeExchanged);
+    const walletSummary = computeWalletAvailableGourdes({
+      orders: ordersSnap.docs.map((item) => item.data() || {}),
+      withdrawals: withdrawalsSnap.docs.map((item) => item.data() || {}),
+      exchangedGourdes: beforeExchanged,
+    });
+    const availableToConvertHtg = walletSummary.availableBalanceHtg;
 
     if (amountGourdes <= 0 || amountGourdes > availableToConvertHtg) {
       throw new HttpsError("failed-precondition", "Montant supérieur au solde HTG disponible.");
@@ -5002,18 +5097,19 @@ exports.createWithdrawalSecure = publicOnCall("createWithdrawalSecure", async (r
     throw new HttpsError("invalid-argument", "Retrait invalide.");
   }
 
-  const [ordersSnap, withdrawalsSnap] = await Promise.all([
+  const [ordersSnap, withdrawalsSnap, clientSnap] = await Promise.all([
     db.collection(CLIENTS_COLLECTION).doc(uid).collection("orders").where("status", "==", "approved").get(),
     db.collection(CLIENTS_COLLECTION).doc(uid).collection("withdrawals").get(),
+    db.collection(CLIENTS_COLLECTION).doc(uid).get(),
   ]);
 
-  const approvedDeposits = ordersSnap.docs.reduce((sum, item) => sum + safeInt(item.data()?.amount), 0);
-  const reservedWithdrawals = withdrawalsSnap.docs.reduce((sum, item) => {
-    const data = item.data() || {};
-    if (data.status === "rejected") return sum;
-    return sum + safeInt(data.requestedAmount ?? data.amount);
-  }, 0);
-  const available = Math.max(0, approvedDeposits - reservedWithdrawals);
+  const clientData = clientSnap.exists ? (clientSnap.data() || {}) : {};
+  const walletSummary = computeWalletAvailableGourdes({
+    orders: ordersSnap.docs.map((item) => item.data() || {}),
+    withdrawals: withdrawalsSnap.docs.map((item) => item.data() || {}),
+    exchangedGourdes: clientData.exchangedGourdes,
+  });
+  const available = walletSummary.availableBalanceHtg;
 
   if (requestedAmount > available) {
     throw new HttpsError("failed-precondition", "Montant supérieur au solde disponible.");
@@ -5253,6 +5349,310 @@ exports.setBotDifficulty = publicOnCall("setBotDifficulty", async (request) => {
     botDifficulty,
   };
 });
+
+exports.getTournamentLeaderboard = publicOnCall("getTournamentLeaderboard", async (request) => {
+  assertAuth(request);
+  const nowMs = Date.now();
+  const windowStart = nowMs - (60 * 60 * 1000);
+  const snap = await db.collection(ROOMS_COLLECTION)
+    .where("endedAtMs", ">=", windowStart)
+    .limit(2000)
+    .get();
+
+  const counts = new Map();
+  snap.forEach((docSnap) => {
+    const data = docSnap.data() || {};
+    const status = String(data.status || "").toLowerCase();
+    if (status !== "ended") return;
+    const winnerUid = String(data.winnerUid || "").trim();
+    if (!winnerUid) return;
+    const wins = safeInt(counts.get(winnerUid) || 0) + 1;
+    counts.set(winnerUid, wins);
+  });
+
+  const leaders = Array.from(counts.entries())
+    .map(([uid, wins]) => ({ uid, wins: safeInt(wins) }))
+    .sort((a, b) => b.wins - a.wins || a.uid.localeCompare(b.uid))
+    .slice(0, 200);
+
+  return {
+    generatedAt: nowMs,
+    leaders,
+  };
+});
+
+function buildBotId(seed, idx) {
+  const raw = Math.abs(seed + idx * 17).toString(36).toUpperCase();
+  return `BOT-${raw.slice(-6)}`;
+}
+
+function generateInitialBots(sessionSeed, userWins) {
+  const botCount = seededInt(sessionSeed + 11, USER_TOURNAMENT_MIN_BOTS, USER_TOURNAMENT_MAX_BOTS);
+  const bots = [];
+  for (let i = 0; i < botCount; i += 1) {
+    const id = buildBotId(sessionSeed, i + 1);
+    const wins = clamp(seededInt(sessionSeed + i * 31, Math.max(0, userWins - 1), userWins + 1), 0, userWins + 1);
+    bots.push({ id, wins, seed: sessionSeed + i, isChampion: false, lastUpdatedMs: sessionSeed });
+  }
+  const champIdx = seededInt(sessionSeed + 999, 0, bots.length - 1);
+  bots[champIdx].isChampion = true;
+  return { bots, championId: bots[champIdx].id };
+}
+
+async function countUserWinsInWindow(uid, startMs, endMs) {
+  // Single where clause to avoid composite index requirement; filter window in code
+  const snap = await db.collection(ROOMS_COLLECTION)
+    .where("winnerUid", "==", uid)
+    .limit(2000)
+    .get();
+  let wins = 0;
+  snap.forEach((docSnap) => {
+    const data = docSnap.data() || {};
+    const status = String(data.status || "").toLowerCase();
+    const endedAt = toMillis(data.endedAtMs);
+    if (status !== "ended") return;
+    if (endedAt < startMs || endedAt > endMs) return;
+    wins += 1;
+  });
+  return safeInt(wins);
+}
+
+function capBotWins(bot, userWins, timeLeftMs) {
+  const beforeFinal = timeLeftMs > (2 * 60 * 1000);
+  const cap = beforeFinal ? userWins + 1 : userWins + 3;
+  bot.wins = clamp(bot.wins, 0, cap);
+}
+
+function spreadBotsOnUserGain(bots, userWins) {
+  bots.forEach((bot, idx) => {
+    const min = Math.max(0, userWins - 1);
+    const max = Math.max(userWins + (bot.isChampion ? 1 : 0), min);
+    bot.wins = clamp(randomInt(min, max), 0, userWins + 1);
+    bot.lastUpdatedMs = Date.now();
+  });
+}
+
+function bumpIdleBots(bots, userWins) {
+  const eligible = bots.filter((b) => !b.isChampion);
+  const bumps = randomInt(1, Math.max(1, Math.floor(eligible.length / 3)));
+  for (let i = 0; i < bumps; i += 1) {
+    const pick = eligible[randomInt(0, eligible.length - 1)];
+    if (!pick) continue;
+    pick.wins = clamp(pick.wins + 1, 0, userWins + 3);
+    pick.lastUpdatedMs = Date.now();
+  }
+}
+
+function championProgress(bots, championId, userWins, timeLeftMs) {
+  const champ = bots.find((b) => b.id === championId) || bots.find((b) => b.isChampion);
+  if (!champ) return;
+  champ.isChampion = true;
+  if (timeLeftMs > 2 * 60 * 1000) {
+    // pas de dépassement avant le sprint final
+    champ.wins = Math.min(champ.wins, userWins);
+    return;
+  }
+  const target = clamp(userWins + randomInt(1, 3), userWins + 1, userWins + 3);
+  champ.wins = Math.max(champ.wins, target);
+  champ.lastUpdatedMs = Date.now();
+}
+
+function sortLeaderboard(entries) {
+  return entries.sort((a, b) => {
+    const byScore = safeInt(b.wins) - safeInt(a.wins);
+    if (byScore !== 0) return byScore;
+    if (a.isUser && !b.isUser) return -1;
+    if (b.isUser && !a.isUser) return 1;
+    if (!a.isBot && b.isBot) return -1;
+    if (!b.isBot && a.isBot) return 1;
+    return String(a.id || a.uid || "").localeCompare(String(b.id || b.uid || ""));
+  });
+}
+
+function enforceUserTopFive(entries, userId, timeLeftMs) {
+  const beforeFinal = timeLeftMs > (2 * 60 * 1000);
+  if (!beforeFinal) return entries;
+  const sorted = sortLeaderboard(entries.slice());
+  const userIndex = sorted.findIndex((e) => e.isUser);
+  if (userIndex >= 0 && userIndex < 5) return entries;
+  // trop bas -> on réduit les bots dominants pour remonter l'utilisateur
+  const userEntry = sorted.find((e) => e.isUser);
+  const userWins = userEntry ? userEntry.wins : 0;
+  const trimmed = sorted.map((e, idx) => {
+    if (e.isUser) return e;
+    if (idx < 4) {
+      return { ...e, wins: Math.min(e.wins, userWins) };
+    }
+    return e;
+  });
+  return trimmed;
+}
+
+async function ensureUserTournamentSessionsInternal(uid) {
+  const nowMs = Date.now();
+  const metaRef = userTournamentMetaRef(uid);
+  const sessionsSnap = await metaRef.collection("sessions").get();
+  const existing = sessionsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const active = existing.filter((s) => toMillis(s.endMs) > nowMs && String(s.status || "active") !== "ended");
+
+  const sessions = [...active];
+  const usedSlots = new Set(sessions.map((s) => safeInt(s.slotNumber || 0)));
+
+  while (sessions.length < USER_TOURNAMENT_SLOT_COUNT) {
+    let slotNumber = 1;
+    while (usedSlots.has(slotNumber)) slotNumber += 1;
+    usedSlots.add(slotNumber);
+    const startMs = nowMs;
+    const endMs = startMs + USER_TOURNAMENT_DURATION_MS;
+    const seed = startMs + slotNumber;
+    const { bots, championId } = generateInitialBots(seed, 0);
+    const sessionId = `T-${randomCode(10)}`;
+    const sessionData = {
+      sessionId,
+      startMs,
+      endMs,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: "active",
+      slotNumber,
+      bots,
+      championId,
+      lastBotTickMs: startMs,
+      lastUserWins: 0,
+      winnerId: "",
+    };
+    await metaRef.collection("sessions").doc(sessionId).set(sessionData);
+    sessions.push({ id: sessionId, ...sessionData });
+  }
+
+  sessions.sort((a, b) => safeInt(a.slotNumber) - safeInt(b.slotNumber));
+  let currentSessionId = "";
+  const metaSnap = await metaRef.get();
+  const metaData = metaSnap.exists ? metaSnap.data() || {} : {};
+  if (metaData.currentSessionId && sessions.find((s) => s.id === metaData.currentSessionId)) {
+    currentSessionId = metaData.currentSessionId;
+  } else {
+    currentSessionId = sessions[0]?.id || "";
+  }
+
+  await metaRef.set({
+    currentSessionId,
+    lastAccessMs: nowMs,
+    slots: sessions.map((s) => ({ sessionId: s.id, slotNumber: safeInt(s.slotNumber), startMs: s.startMs, endMs: s.endMs })),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  return { sessions, currentSessionId };
+}
+
+exports.ensureUserTournamentSessions = publicOnCall("ensureUserTournamentSessions", async (request) => {
+  const { uid } = assertAuth(request);
+  const { sessions, currentSessionId } = await ensureUserTournamentSessionsInternal(uid);
+  return {
+    sessions: sessions.map((s) => ({
+      sessionId: s.id || s.sessionId,
+      slotNumber: safeInt(s.slotNumber),
+      startMs: toMillis(s.startMs),
+      endMs: toMillis(s.endMs),
+      status: s.status || "active",
+    })),
+    currentSessionId,
+  };
+});
+
+exports.selectUserTournament = publicOnCall("selectUserTournament", async (request) => {
+  const { uid } = assertAuth(request);
+  const sessionId = sanitizeText(request.data?.sessionId || "", 120);
+  if (!sessionId) throw new HttpsError("invalid-argument", "sessionId requis");
+  const sessionRef = userTournamentSessionRef(uid, sessionId);
+  const sessionSnap = await sessionRef.get();
+  if (!sessionSnap.exists) throw new HttpsError("not-found", "Session introuvable");
+  const session = sessionSnap.data() || {};
+  if (toMillis(session.endMs) <= Date.now()) throw new HttpsError("failed-precondition", "Session expirée");
+  await userTournamentMetaRef(uid).set({ currentSessionId: sessionId, lastAccessMs: Date.now() }, { merge: true });
+  return { sessionId };
+});
+
+async function getUserTournamentStateInternal(uid, sessionId) {
+  const sessionRef = userTournamentSessionRef(uid, sessionId);
+  const snap = await sessionRef.get();
+  if (!snap.exists) throw new HttpsError("not-found", "Session introuvable");
+  const session = snap.data() || {};
+  const nowMs = Date.now();
+  const startMs = toMillis(session.startMs) || nowMs;
+  const endMs = toMillis(session.endMs) || (startMs + USER_TOURNAMENT_DURATION_MS);
+  let status = String(session.status || "active");
+  let bots = Array.isArray(session.bots) ? session.bots.map((b) => ({ ...b })) : [];
+  let championId = session.championId || "";
+  const lastUserWins = safeInt(session.lastUserWins || 0);
+  const lastBotTickMs = toMillis(session.lastBotTickMs) || startMs;
+
+  if (!bots.length) {
+    const init = generateInitialBots(startMs, 0);
+    bots = init.bots;
+    championId = init.championId;
+  }
+
+  const userWins = await countUserWinsInWindow(uid, startMs, endMs);
+  const timeLeftMs = Math.max(0, endMs - nowMs);
+
+  if (status !== "ended") {
+    if (userWins > lastUserWins) {
+      spreadBotsOnUserGain(bots, userWins);
+    } else if (nowMs - lastBotTickMs > 60 * 1000) {
+      bumpIdleBots(bots, userWins);
+    }
+
+    bots.forEach((b) => capBotWins(b, userWins, timeLeftMs));
+    championProgress(bots, championId, userWins, timeLeftMs);
+
+    const leaderboardEntries = [
+      { id: uid, wins: userWins, isBot: false, isUser: true },
+      ...bots.map((b) => ({ id: b.id, wins: safeInt(b.wins), isBot: true, isChampion: !!b.isChampion })),
+    ];
+    const enforced = enforceUserTopFive(leaderboardEntries, uid, timeLeftMs);
+    const sorted = sortLeaderboard(enforced);
+    const winnerId = timeLeftMs <= 0 ? (championId || sorted[0]?.id || uid) : (session.winnerId || "");
+    status = timeLeftMs <= 0 ? "ended" : status;
+
+    await sessionRef.set({
+      status,
+      bots,
+      championId,
+      lastUserWins: userWins,
+      lastBotTickMs: nowMs,
+      winnerId,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    return {
+      session: { sessionId, startMs, endMs, status, slotNumber: safeInt(session.slotNumber || 0), winnerId },
+      userWins,
+      timeLeftMs,
+      leaderboard: sorted,
+    };
+  }
+
+  const leaderboardEntries = [
+    { id: uid, wins: userWins, isBot: false, isUser: true },
+    ...bots.map((b) => ({ id: b.id, wins: safeInt(b.wins), isBot: true, isChampion: !!b.isChampion })),
+  ];
+  const sorted = sortLeaderboard(leaderboardEntries);
+  return {
+    session: { sessionId, startMs, endMs, status, slotNumber: safeInt(session.slotNumber || 0), winnerId: session.winnerId || championId || sorted[0]?.id },
+    userWins,
+    timeLeftMs,
+    leaderboard: sorted,
+  };
+}
+
+exports.getUserTournamentState = publicOnCall("getUserTournamentState", async (request) => {
+  const { uid } = assertAuth(request);
+  const sessionId = sanitizeText(request.data?.sessionId || "", 120);
+  if (!sessionId) throw new HttpsError("invalid-argument", "sessionId requis");
+  return getUserTournamentStateInternal(uid, sessionId);
+});
+
 
 exports.createAmbassadorSecure = publicOnCall("createAmbassadorSecure", async (request) => {
   if (!AMBASSADOR_SYSTEM_ENABLED) {
