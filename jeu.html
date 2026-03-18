@@ -157,16 +157,16 @@
             Utilisateurs en ligne: 30 000
         </div>
 
-        <div id="LocalTurnHud" class="fixed right-3 top-3 z-[2700] rounded-2xl border border-white/20 bg-[#3F4766]/65 px-3 py-2 text-white shadow-[10px_10px_24px_rgba(16,23,40,0.45),-8px_-8px_18px_rgba(112,126,165,0.18)] backdrop-blur-xl">
-            <div id="LocalTurnLabel" class="text-[11px] font-semibold uppercase tracking-wide text-white/80">En attente</div>
-            <div id="LocalTurnValue" class="mt-0.5 text-lg font-bold leading-none">--</div>
-            <div class="mt-2 h-1.5 w-28 overflow-hidden rounded-full border border-white/20 bg-white/10">
+        <div id="LocalTurnHud" class="fixed right-2 top-2 z-[2700] rounded-xl border border-white/20 bg-[#3F4766]/58 px-2 py-1.5 text-white shadow-[10px_10px_24px_rgba(16,23,40,0.45),-8px_-8px_18px_rgba(112,126,165,0.18)] backdrop-blur-xl sm:right-3 sm:top-3 sm:rounded-2xl sm:bg-[#3F4766]/65 sm:px-3 sm:py-2">
+            <div id="LocalTurnLabel" class="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/75 sm:text-[11px] sm:tracking-wide sm:text-white/80">En attente</div>
+            <div id="LocalTurnValue" class="mt-0.5 text-sm font-bold leading-none sm:text-lg">--</div>
+            <div class="mt-1.5 h-1 w-20 overflow-hidden rounded-full border border-white/20 bg-white/10 sm:mt-2 sm:h-1.5 sm:w-28">
                 <span id="LocalTurnBar" class="block h-full w-full rounded-full bg-gradient-to-r from-orange-500 to-amber-300 transition-all duration-300"></span>
             </div>
-            <div class="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-2 py-1 shadow-[inset_4px_4px_8px_rgba(18,24,38,0.35),inset_-4px_-4px_8px_rgba(110,124,163,0.18)]">
-                <img src="./does.png" alt="Does" class="h-4 w-4 rounded-full object-cover" onerror="this.style.display='none'" />
-                <span class="text-[10px] font-semibold uppercase tracking-wide text-white/75">Does</span>
-                <span id="LocalDoesValue" class="text-xs font-bold text-white">0</span>
+            <div class="mt-1.5 inline-flex items-center gap-1 rounded-lg border border-white/20 bg-white/10 px-1.5 py-0.5 shadow-[inset_4px_4px_8px_rgba(18,24,38,0.35),inset_-4px_-4px_8px_rgba(110,124,163,0.18)] sm:mt-2 sm:gap-1.5 sm:rounded-xl sm:px-2 sm:py-1">
+                <img src="./does.png" alt="Does" class="h-3.5 w-3.5 rounded-full object-cover sm:h-4 sm:w-4" onerror="this.style.display='none'" />
+                <span class="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/70 sm:text-[10px] sm:tracking-wide sm:text-white/75">Does</span>
+                <span id="LocalDoesValue" class="text-[11px] font-bold text-white sm:text-xs">0</span>
             </div>
         </div>
 
