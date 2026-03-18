@@ -157,16 +157,20 @@
             Utilisateurs en ligne: 30 000
         </div>
 
-        <div id="LocalTurnHud" class="fixed right-2 top-2 z-[2700] rounded-xl border border-white/20 bg-[#3F4766]/58 px-2 py-1.5 text-white shadow-[10px_10px_24px_rgba(16,23,40,0.45),-8px_-8px_18px_rgba(112,126,165,0.18)] backdrop-blur-xl sm:right-3 sm:top-3 sm:rounded-2xl sm:bg-[#3F4766]/65 sm:px-3 sm:py-2">
-            <div id="LocalTurnLabel" class="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/75 sm:text-[11px] sm:tracking-wide sm:text-white/80">En attente</div>
-            <div id="LocalTurnValue" class="mt-0.5 text-sm font-bold leading-none sm:text-lg">--</div>
-            <div class="mt-1.5 h-1 w-20 overflow-hidden rounded-full border border-white/20 bg-white/10 sm:mt-2 sm:h-1.5 sm:w-28">
-                <span id="LocalTurnBar" class="block h-full w-full rounded-full bg-gradient-to-r from-orange-500 to-amber-300 transition-all duration-300"></span>
+        <div id="LocalTurnHud" class="fixed right-1 top-1 z-[2700] max-w-[4.9rem] rounded-xl border border-white/15 bg-[#3F4766]/48 px-1.5 py-1 text-white shadow-[10px_10px_24px_rgba(16,23,40,0.45),-8px_-8px_18px_rgba(112,126,165,0.18)] backdrop-blur-xl sm:right-3 sm:top-3 sm:max-w-none sm:rounded-2xl sm:border-white/20 sm:bg-[#3F4766]/65 sm:px-3 sm:py-2">
+            <div class="flex items-start justify-between gap-1.5 sm:block">
+                <div class="min-w-0 flex-1">
+                    <div id="LocalTurnLabel" class="hidden text-[11px] font-semibold uppercase tracking-wide text-white/80 sm:block">En attente</div>
+                    <div id="LocalTurnValue" class="text-[13px] font-bold leading-none sm:mt-0.5 sm:text-lg">--</div>
+                </div>
+                <div class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/15 bg-white/10 px-1 py-0.5 shadow-[inset_4px_4px_8px_rgba(18,24,38,0.35),inset_-4px_-4px_8px_rgba(110,124,163,0.18)] sm:mt-2 sm:gap-1.5 sm:rounded-xl sm:border-white/20 sm:px-2 sm:py-1">
+                    <img src="./does.png" alt="Does" class="h-3 w-3 rounded-full object-cover sm:h-4 sm:w-4" onerror="this.style.display='none'" />
+                    <span class="hidden text-[10px] font-semibold uppercase tracking-wide text-white/75 sm:inline">Does</span>
+                    <span id="LocalDoesValue" class="text-[10px] font-bold text-white sm:text-xs">0</span>
+                </div>
             </div>
-            <div class="mt-1.5 inline-flex items-center gap-1 rounded-lg border border-white/20 bg-white/10 px-1.5 py-0.5 shadow-[inset_4px_4px_8px_rgba(18,24,38,0.35),inset_-4px_-4px_8px_rgba(110,124,163,0.18)] sm:mt-2 sm:gap-1.5 sm:rounded-xl sm:px-2 sm:py-1">
-                <img src="./does.png" alt="Does" class="h-3.5 w-3.5 rounded-full object-cover sm:h-4 sm:w-4" onerror="this.style.display='none'" />
-                <span class="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/70 sm:text-[10px] sm:tracking-wide sm:text-white/75">Does</span>
-                <span id="LocalDoesValue" class="text-[11px] font-bold text-white sm:text-xs">0</span>
+            <div class="mt-1 h-[3px] w-12 overflow-hidden rounded-full border border-white/15 bg-white/10 sm:mt-2 sm:h-1.5 sm:w-28 sm:border-white/20">
+                <span id="LocalTurnBar" class="block h-full w-full rounded-full bg-gradient-to-r from-orange-500 to-amber-300 transition-all duration-300"></span>
             </div>
         </div>
 
